@@ -42,10 +42,6 @@
             pkgs.bash
             pkgs.coreutils
             pkgs.findutils
-            pkgs.gnused
-            pkgs.gnugrep
-            pkgs.jq
-            pkgs.dasel
           ]
           ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
 
@@ -107,11 +103,11 @@
                 --replace-fail '@VERSION@' "${version}"
 
               # Wrap the launcher so that:
-              #   1. Nix-provided bash 5.x is first on PATH (macOS ships bash 3.2 which
-              #      lacks associative arrays and ''${var,,} case-folding used by the script).
-              #   2. All other runtime tools (coreutils, findutils, gnused, gnugrep, jq,
-              #      dasel, and podman on Linux) are available without requiring them on
-              #      the user's system PATH.
+              #   1. Nix-provided bash 5.x is first on PATH (macOS ships bash 3.2;
+              #      the script is now compatible with bash 3.2+ but the Nix bash
+              #      is still preferred for consistency).
+              #   2. coreutils (sha256sum, cut, basename, etc.) and podman on Linux
+              #      are available without requiring them on the user's system PATH.
               wrapProgram $out/bin/agent-sandbox \
                 --prefix PATH : ${lib.makeBinPath runtimeDeps}
 

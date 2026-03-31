@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Require bash 4.0+ for associative arrays and ${var,,} case-folding.
-# On macOS the system bash is 3.2; the Nix wrapper substitutes a bash 5.x shebang.
-# This check provides a clear error if the script is invoked with an older bash.
-if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-	echo "[agent-sandbox] ERROR: bash 4.0 or newer is required (found ${BASH_VERSION}). Install GNU bash via Nix or Homebrew." >&2
-	exit 1
-fi
-
 SHARE_DIR="${AGENT_SANDBOX_SHARE_DIR:-@SHARE_DIR@}"
 VERSION="${AGENT_SANDBOX_VERSION:-@VERSION@}"
 
@@ -22,6 +14,21 @@ err() { echo "[agent-sandbox] ERROR: $*" >&2; }
 die() {
 	err "$*"
 	exit 1
+}
+
+# Portable realpath: resolves symlinks and canonicalizes a path.
+# Works on macOS (bash 3.2, no GNU coreutils) via realpath or python3 fallback.
+portable_realpath() {
+	if command -v realpath &>/dev/null; then
+		realpath "$1"
+	elif command -v python3 &>/dev/null; then
+		python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"
+	else
+		readlink -f "$1" 2>/dev/null || {
+			err "Cannot resolve path '$1': install 'realpath' or 'python3'"
+			return 1
+		}
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -180,19 +187,50 @@ parse_config() {
 		return 0
 	fi
 
-	# Verify dasel is available
-	if ! command -v dasel &>/dev/null; then
-		die "dasel is required to parse config.toml but was not found in PATH"
+	# Verify python3 with tomllib is available (requires Python 3.11+)
+	if ! python3 -c "import tomllib" 2>/dev/null; then
+		die "Python 3.11+ with tomllib is required to parse config.toml but was not found"
 	fi
 
-	# Test that the file is parseable (dasel exits non-zero on malformed TOML)
-	if ! dasel -f "$CONFIG_FILE" -r toml . &>/dev/null; then
-		die "Config file '$CONFIG_FILE' is malformed TOML — fix or remove it"
-	fi
+	# Parse TOML to JSON; die on malformed input
+	local config_json
+	config_json=$(python3 -c "
+import tomllib, json, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        config = tomllib.load(f)
+    json.dump(config, sys.stdout)
+except Exception as e:
+    print(f'PARSE_ERROR:{e}', file=sys.stderr)
+    sys.exit(1)
+" "$CONFIG_FILE" 2>/dev/null) || die "Config file '$CONFIG_FILE' is malformed TOML — fix or remove it"
+
+	# Helper: extract a dotted-key value from the JSON blob.
+	# Prints each list item on its own line; booleans as 'true'/'false'; scalars as-is.
+	_cfg_get() {
+		python3 -c "
+import json, sys
+data = json.loads(sys.argv[1])
+keys = sys.argv[2].split('.')
+for k in keys:
+    if isinstance(data, dict) and k in data:
+        data = data[k]
+    else:
+        sys.exit(0)
+result = data
+if isinstance(result, list):
+    for item in result:
+        print(item)
+elif isinstance(result, bool):
+    print('true' if result else 'false')
+else:
+    print(result)
+" "$config_json" "$1"
+	}
 
 	# [defaults] agent
 	local val
-	val=$(dasel -f "$CONFIG_FILE" -r toml -w plain 'defaults.agent' 2>/dev/null || true)
+	val=$(_cfg_get "defaults.agent")
 	if [[ -n "$val" ]]; then
 		if [[ "$val" != "opencode" && "$val" != "claude" ]]; then
 			die "Config error: defaults.agent must be 'opencode' or 'claude', got '$val'"
@@ -201,59 +239,47 @@ parse_config() {
 	fi
 
 	# [network] extra_domains (array)
-	local domains_json
-	domains_json=$(dasel -f "$CONFIG_FILE" -r toml -w json 'network.extra_domains' 2>/dev/null || true)
-	if [[ -n "$domains_json" && "$domains_json" != "null" ]]; then
-		# Require multi-label FQDNs (at least one dot) to match init-firewall.sh's HOSTNAME_REGEX.
-		# Rejects single-label names (e.g. "localhost"), trailing dots, and consecutive dots.
-		local domain_regex='^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
-		while IFS= read -r domain; do
-			[[ -z "$domain" ]] && continue
-			if ! [[ "$domain" =~ $domain_regex ]]; then
-				die "Config error: invalid domain in network.extra_domains: '$domain' (must be a valid multi-label FQDN)"
-			fi
-			CFG_EXTRA_DOMAINS+=("$domain")
-		done < <(echo "$domains_json" | dasel -r json -w plain 'all()' 2>/dev/null || true)
-	fi
+	# Require multi-label FQDNs (at least one dot) to match init-firewall.sh's HOSTNAME_REGEX.
+	# Rejects single-label names (e.g. "localhost"), trailing dots, and consecutive dots.
+	local domain_regex='^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
+	while IFS= read -r domain; do
+		[[ -z "$domain" ]] && continue
+		if ! [[ "$domain" =~ $domain_regex ]]; then
+			die "Config error: invalid domain in network.extra_domains: '$domain' (must be a valid multi-label FQDN)"
+		fi
+		CFG_EXTRA_DOMAINS+=("$domain")
+	done < <(_cfg_get "network.extra_domains")
 
 	# [env] extra_vars (array)
-	local vars_json
-	vars_json=$(dasel -f "$CONFIG_FILE" -r toml -w json 'env.extra_vars' 2>/dev/null || true)
-	if [[ -n "$vars_json" && "$vars_json" != "null" ]]; then
-		local var_regex='^[A-Za-z_][A-Za-z0-9_]*$'
-		while IFS= read -r varname; do
-			[[ -z "$varname" ]] && continue
-			if ! [[ "$varname" =~ $var_regex ]]; then
-				die "Config error: invalid variable name in env.extra_vars: '$varname'"
-			fi
-			CFG_EXTRA_VARS+=("$varname")
-		done < <(echo "$vars_json" | dasel -r json -w plain 'all()' 2>/dev/null || true)
-	fi
+	local var_regex='^[A-Za-z_][A-Za-z0-9_]*$'
+	while IFS= read -r varname; do
+		[[ -z "$varname" ]] && continue
+		if ! [[ "$varname" =~ $var_regex ]]; then
+			die "Config error: invalid variable name in env.extra_vars: '$varname'"
+		fi
+		CFG_EXTRA_VARS+=("$varname")
+	done < <(_cfg_get "env.extra_vars")
 
 	# [workspace] follow_all_symlinks (boolean)
-	val=$(dasel -f "$CONFIG_FILE" -r toml -w plain 'workspace.follow_all_symlinks' 2>/dev/null || true)
+	val=$(_cfg_get "workspace.follow_all_symlinks")
 	if [[ "$val" == "true" ]]; then
 		CFG_FOLLOW_ALL_SYMLINKS=true
 	fi
 
 	# [mounts] extra_paths (array)
-	local paths_json
-	paths_json=$(dasel -f "$CONFIG_FILE" -r toml -w json 'mounts.extra_paths' 2>/dev/null || true)
-	if [[ -n "$paths_json" && "$paths_json" != "null" ]]; then
-		while IFS= read -r mpath; do
-			[[ -z "$mpath" ]] && continue
-			CFG_EXTRA_PATHS+=("$mpath")
-		done < <(echo "$paths_json" | dasel -r json -w plain 'all()' 2>/dev/null || true)
-	fi
+	while IFS= read -r mpath; do
+		[[ -z "$mpath" ]] && continue
+		CFG_EXTRA_PATHS+=("$mpath")
+	done < <(_cfg_get "mounts.extra_paths")
 
 	# [resources] memory
-	val=$(dasel -f "$CONFIG_FILE" -r toml -w plain 'resources.memory' 2>/dev/null || true)
+	val=$(_cfg_get "resources.memory")
 	if [[ -n "$val" ]]; then
 		CFG_MEMORY="$val"
 	fi
 
 	# [resources] cpus
-	val=$(dasel -f "$CONFIG_FILE" -r toml -w plain 'resources.cpus' 2>/dev/null || true)
+	val=$(_cfg_get "resources.cpus")
 	if [[ -n "$val" ]]; then
 		if ! [[ "$val" =~ ^[0-9]+$ ]] || [[ "$val" -le 0 ]]; then
 			die "Config error: resources.cpus must be a positive integer, got '$val'"
@@ -336,7 +362,7 @@ resolve_workspace() {
 	# Expand ~ if present
 	ws="${ws/#\~/$HOME}"
 	local resolved
-	if ! resolved=$(realpath "$ws" 2>/dev/null); then
+	if ! resolved=$(portable_realpath "$ws" 2>/dev/null); then
 		die "Cannot resolve workspace path: $ws"
 	fi
 	if [[ ! -d "$resolved" ]]; then
@@ -351,10 +377,10 @@ resolve_workspace() {
 
 sanitize_basename() {
 	local name="$1"
-	# Lowercase
-	name="${name,,}"
+	# Lowercase (portable: tr works on bash 3.2+)
+	name=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
 	# Strip non-[a-z0-9-] characters
-	name="${name//[^a-z0-9-]/}"
+	name=$(printf '%s' "$name" | tr -cd 'a-z0-9-')
 	echo "$name"
 }
 
@@ -478,7 +504,7 @@ do_prune() {
 			continue
 		fi
 		log "Removing old image: $image"
-		"$RUNTIME" rmi "$image" && removed=$((removed + 1)) || warn "Failed to remove $image"
+		if "$RUNTIME" rmi "$image"; then removed=$((removed + 1)); else warn "Failed to remove $image"; fi
 	done <<<"$images"
 
 	log "Pruned $removed old image(s)."
@@ -566,12 +592,9 @@ fi
 # Appends read-write bind mounts for depth-1 workspace symlinks pointing outside the workspace.
 # Skips dotfile targets unless OPT_FOLLOW_ALL_SYMLINKS is true.
 collect_symlink_mounts() {
-	# Verify readlink -f is available (not present on macOS without GNU coreutils)
-	if ! readlink -f /tmp &>/dev/null; then
-		die "readlink -f is not available. Install GNU coreutils (e.g., via Nix or 'brew install coreutils')."
-	fi
+	# Newline-delimited list of already-seen resolved targets (deduplication)
+	local _seen_targets=""
 
-	declare -A seen_targets=()
 	while IFS= read -r -d '' entry; do
 		# Skip the workspace directory itself (find includes it at depth 0)
 		[[ "$entry" == "$WORKSPACE" ]] && continue
@@ -580,7 +603,7 @@ collect_symlink_mounts() {
 		[[ -L "$entry" ]] || continue
 
 		local target
-		target=$(readlink -f "$entry" 2>/dev/null || true)
+		target=$(portable_realpath "$entry" 2>/dev/null || true)
 		[[ -z "$target" ]] && continue
 
 		# Skip if target doesn't exist
@@ -608,11 +631,12 @@ collect_symlink_mounts() {
 			fi
 		fi
 
-		# Deduplicate by resolved target path
-		if [[ -n "${seen_targets[$target]+x}" ]]; then
+		# Deduplicate by resolved target path (exact line match)
+		if printf '%s\n' "$_seen_targets" | grep -qFx "$target"; then
 			continue
 		fi
-		seen_targets["$target"]=1
+		_seen_targets="${_seen_targets}${target}
+"
 
 		MOUNT_FLAGS+=("-v" "${target}:${target}:rw${MOUNT_Z}")
 		log "Mounting symlink target: $target"
@@ -631,7 +655,8 @@ fi
 # Paths are expanded, resolved, existence-checked, and deduplicated.
 collect_extra_mounts() {
 	local all_entries=("${OPT_EXTRA_MOUNTS[@]}" "${CFG_EXTRA_PATHS[@]}")
-	declare -A seen_paths=()
+	# Newline-delimited list of already-seen resolved paths (deduplication)
+	local _seen_paths=""
 
 	local entry
 	local mode
@@ -651,8 +676,8 @@ collect_extra_mounts() {
 		# Expand ~/
 		path="${path/#\~/$HOME}"
 
-		# Resolve via realpath
-		if ! resolved=$(realpath "$path" 2>/dev/null); then
+		# Resolve via portable_realpath
+		if ! resolved=$(portable_realpath "$path" 2>/dev/null); then
 			warn "Cannot resolve extra mount path, skipping: $path"
 			continue
 		fi
@@ -663,17 +688,18 @@ collect_extra_mounts() {
 			continue
 		fi
 
-		# Deduplicate by resolved host path
-		if [[ -n "${seen_paths[$resolved]+x}" ]]; then
+		# Deduplicate by resolved host path (exact line match)
+		if printf '%s\n' "$_seen_paths" | grep -qFx "$resolved"; then
 			continue
 		fi
-		seen_paths["$resolved"]=1
+		_seen_paths="${_seen_paths}${resolved}
+"
 
 		# Determine container path:
 		# - Paths under $HOME → /home/sandbox/<relative-path>
 		# - Absolute paths outside $HOME → same absolute path
 		if [[ "$resolved" == "$HOME"/* ]]; then
-			rel="${resolved#$HOME/}"
+			rel="${resolved#"$HOME"/}"
 			container_path="/home/sandbox/${rel}"
 		else
 			container_path="$resolved"
