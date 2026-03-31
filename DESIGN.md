@@ -105,7 +105,7 @@ Examples:
 
 | Package | Method |
 |---|---|
-| bash, curl, git, make, wget, sudo | apt |
+| bash, curl, git, make, gosu | apt |
 | iptables, ipset, iproute2, dnsutils | apt |
 | jq, aggregate, ca-certificates | apt |
 | nodejs, npm | apt |
@@ -119,7 +119,7 @@ Examples:
 
 `opencode db migrate` is run at image build time to avoid a hang on first container start (a known issue discovered in ws1/sandbox).
 
-A `sandbox` user is created at UID 1000 with sudo scoped to exactly one command: `sandbox ALL=(root) NOPASSWD: /init-firewall.sh`. No other sudo access is granted.
+A `sandbox` user is created at UID 1000. The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `gosu` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
 
 **Image tagging:** `agent-sandbox:<sha256-of-Containerfile-contents>`. The launcher computes this hash at startup, checks `podman images` for the tag, and builds automatically if absent. `--build` forces a rebuild unconditionally.
 
@@ -171,14 +171,15 @@ Additional variables can be forwarded via `config.toml` `[env]` `extra_vars`. Va
 
 Runs inside the container in this order:
 
-1. Run `sudo /init-firewall.sh` to establish iptables allowlist and disable IPv6 — **first**, before any other step
-2. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
-3. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-4. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/config.json`; create the file if absent
-5. Based on `$AGENT` env var (set by launcher):
+1. Run `/init-firewall.sh` as root to establish iptables allowlist and disable IPv6 — **first**, before any other step
+2. Drop to the `sandbox` user via `gosu`; steps 3–7 run as `sandbox`
+3. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
+4. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
+5. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/config.json`; create the file if absent
+6. Based on `$AGENT` env var (set by launcher):
    - `opencode`: run `rtk init -g --opencode`
    - `claude`: run `rtk init -g`
-6. `exec` the agent binary with `/workspace` as working directory:
+7. `exec` the agent binary with `/workspace` as working directory:
    - `opencode`: `exec ~/.opencode/bin/opencode`
    - `claude`: `exec claude --dangerously-skip-permissions`
 
@@ -468,9 +469,9 @@ Configured on the repository (not via workflow):
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Scoped sudo | `NOPASSWD: /init-firewall.sh` only | Least privilege; sandbox user cannot escalate beyond firewall setup |
+| gosu privilege drop | Root → sandbox via `gosu`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox |
 | Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW |
-| Privilege escalation | `--security-opt=no-new-privileges` | Prevents in-container escalation |
+| Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with gosu (syscall-based) |
 | IPv6 | Disabled via sysctl in init-firewall.sh | Eliminates iptables bypass via IPv6 |
 | Firewall ordering | Firewall runs first in entrypoint | No unprotected network window before agent starts |
 | Input sanitization | Workspace basename → `[a-z0-9-]`; path via `realpath` | Prevents name injection and mount ambiguity |
@@ -510,7 +511,7 @@ The container boundary is the primary trust line. The network firewall is defens
 **Mitigations in place:**
 
 - Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` only, for iptables)
-- `no-new-privileges` prevents in-container privilege escalation
+- `no-new-privileges` prevents execve-based privilege escalation
 - IPv6 disabled to prevent firewall bypass
 - Firewall established before any agent code runs
 - API keys restricted to an explicit allowlist (not a glob pattern)
