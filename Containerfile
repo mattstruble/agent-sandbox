@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     make \
-    sudo \
+    gosu \
     iptables \
     ipset \
     iproute2 \
@@ -61,12 +61,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a19
 
 RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox
 
-# ─── sudoers: sandbox may only run /init-firewall.sh as root ──────────────────
-
-RUN echo "sandbox ALL=(root) NOPASSWD: /init-firewall.sh" \
-    > /etc/sudoers.d/sandbox-firewall \
-    && chmod 0440 /etc/sudoers.d/sandbox-firewall
-
 # ─── Copy scripts ─────────────────────────────────────────────────────────────
 
 COPY --chown=root:root --chmod=0755 init-firewall.sh /init-firewall.sh
@@ -100,7 +94,9 @@ USER root
 RUN timeout 180 npm install -g @anthropic-ai/claude-code@2.1.87
 
 # ─── Runtime configuration ────────────────────────────────────────────────────
+# The entrypoint starts as root to establish the iptables firewall, then drops
+# to the sandbox user via gosu for all subsequent operations.
 
-USER sandbox
+USER root
 WORKDIR /workspace
 ENTRYPOINT ["/entrypoint.sh"]
