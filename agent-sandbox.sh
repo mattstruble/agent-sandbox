@@ -704,8 +704,14 @@ fi
 # SSH agent socket (ro, unless --no-ssh or SSH_AUTH_SOCK not set)
 SSH_FORWARDED=false
 if ! $OPT_NO_SSH && [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-	if [[ -S "${SSH_AUTH_SOCK}" ]]; then
-		MOUNT_FLAGS+=("-v" "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:ro${MOUNT_Z}")
+	# Normalize: expand leading ~ to $HOME and strip literal backslashes.
+	# Common when SSH_AUTH_SOCK is set with unexpanded ~ or backslash-escaped
+	# spaces in shell rc files (e.g. 1Password agent socket paths).
+	_ssh_sock="${SSH_AUTH_SOCK}"
+	_ssh_sock="${_ssh_sock/#\~/$HOME}"
+	_ssh_sock="${_ssh_sock//\\/}"
+	if [[ -S "$_ssh_sock" ]]; then
+		MOUNT_FLAGS+=("-v" "${_ssh_sock}:/tmp/ssh_auth_sock:ro${MOUNT_Z}")
 		SSH_FORWARDED=true
 	else
 		warn "SSH_AUTH_SOCK='${SSH_AUTH_SOCK}' is not a socket, skipping SSH forwarding"
@@ -916,6 +922,8 @@ RUN_CMD=(
 	--cap-drop=ALL
 	--cap-add=NET_ADMIN
 	--cap-add=NET_RAW
+	--cap-add=SETUID
+	--cap-add=SETGID
 	--security-opt=no-new-privileges
 	"--memory=${CFG_MEMORY}"
 	"--cpus=${CFG_CPUS}"
