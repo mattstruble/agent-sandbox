@@ -13,6 +13,11 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - As a developer, I want to start a sandbox from any directory with a single command, so that the workflow is as fast as running the agent directly.
 - As a developer, I want to run multiple sandboxed agent sessions in parallel on different projects, so that I can parallelize work without sessions interfering with each other.
 - As a developer, I want my git identity, SSH credentials, and API keys available inside the sandbox, so that the agent can perform the same operations it could outside the sandbox.
+- As a developer, I want a pre-built container image available on GHCR, so that I can run the sandbox without Nix and without waiting for a local build.
+- As a maintainer, I want automated semver releases driven by conventional commits, so that versioning is consistent and changelogs are generated automatically.
+- As a maintainer, I want PRs to be linted, scanned, and validated before merge, so that broken or insecure changes don't reach main.
+- As a maintainer, I want dependency update PRs opened automatically, so that pinned versions stay current without manual tracking.
+- As a NixOS, nix-darwin, or Home Manager user, I want to enable agent-sandbox declaratively in my Nix configuration and manage its settings through Nix options, so that the tool integrates with my existing system management workflow.
 
 ## Expected Behaviors
 
@@ -67,6 +72,44 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - The tool is runnable without installation via `nix run github:mstruble/agent-sandbox`.
 - The tool is installable into a user profile via `nix profile install github:mstruble/agent-sandbox`.
 - The tool is referenceable as a flake input from other Nix flakes.
+- The container image is published to GHCR at `ghcr.io/mstruble/agent-sandbox`.
+- Every push to main publishes a SHA-tagged image (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
+- Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
+- `agent-sandbox --version` prints the current version and exits.
+- The flake is structured using `flake-parts` to support both per-system outputs (packages, apps) and system-agnostic outputs (modules).
+- The flake exposes a NixOS module (`nixosModules.default`), a nix-darwin module (`darwinModules.default`), and a Home Manager module (`homeManagerModules.default`).
+- All three modules expose `programs.agent-sandbox.enable` to add the tool to the environment and `programs.agent-sandbox.package` to override the default package.
+- All three modules expose `programs.agent-sandbox.containerPackage` to specify the container runtime package. Defaults to `pkgs.podman` on Linux, `null` on darwin. When set, the package is added to the environment. When `null`, the user ensures a container runtime is available on PATH.
+- The Home Manager module generates `~/.config/agent-sandbox/config.toml` from typed Nix options covering all config sections: default agent, extra network domains, extra environment variables, symlink behavior, extra mount paths, and resource limits.
+- When no settings are configured in the Home Manager module, no config file is generated (the launcher uses its built-in defaults).
+- The NixOS and nix-darwin modules do not manage agent-sandbox configuration.
+
+### Continuous Integration
+
+- Every pull request to main runs lint checks, builds the container image, and scans it for vulnerabilities before merge.
+- ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`).
+- `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
+- PR titles are validated against the conventional commit format (required for Release Please changelog generation).
+- Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR and every push to main.
+- Trivy performs a filesystem scan on the repository on every PR and every push to main.
+- All CI checks are required to pass before a PR can be merged.
+- PRs are merged via squash-merge only.
+
+### Versioning & Releases
+
+- Versioning follows semver and is automated via Release Please based on conventional commits.
+- When conventional commits land on main, Release Please opens (or updates) a PR that bumps the version and generates a changelog.
+- Merging the release PR creates a GitHub Release with a semver tag.
+- The version source of truth is `flake.nix`; Release Please bumps it there.
+- The launcher supports `--version` (or `-v`) which prints the version and exits.
+
+### Dependency Management
+
+- Renovate opens dependency update PRs automatically, grouped by category.
+- Container dependencies (base image, gh CLI, rtk, uv, claude-code) are grouped into a single PR.
+- Nix flake inputs (`flake.lock`) are grouped into a single PR.
+- GitHub Actions versions are grouped into a single PR.
+- Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.
 
 ## Open Questions
 
@@ -76,8 +119,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ## Out of Scope
 
-- Building or publishing a pre-built image to a container registry (the image is always built and cached locally).
-- A Home Manager or NixOS module (the flake exposes a package and app only).
+- Multi-architecture container images (amd64 only).
 - Per-project config files — configuration is user-global (`~/.config/agent-sandbox/config.toml`) only.
 - Support for agents other than OpenCode and Claude Code.
 - Windows support.

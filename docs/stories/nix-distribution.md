@@ -23,5 +23,4 @@ The flake packages the launcher script and support files (Containerfile, entrypo
 - None.
 
 ## Out of Scope
-- A Home Manager or NixOS module (out of scope per PRD).
-- Binary cache / CI-published artifacts.
+- Nix binary cache (e.g., Cachix). GHCR image publishing is covered by the image-publishing story.

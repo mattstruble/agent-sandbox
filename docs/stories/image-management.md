@@ -36,5 +36,5 @@ The launcher computes a SHA256 hash of the Containerfile at startup and uses it 
 - None.
 
 ## Out of Scope
-- Pushing images to a registry (out of scope per PRD).
 - Automatic pruning on every run (pruning is manual via `--prune`).
+- Multi-architecture image builds (amd64 only).
