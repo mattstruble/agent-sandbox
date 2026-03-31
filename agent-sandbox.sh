@@ -49,6 +49,7 @@ Options:
   --list                   List running agent-sandbox containers
   --stop                   Stop sandbox(es) for the given/current workspace
   --prune                  Remove old agent-sandbox images, keeping only the current hash
+  --update                 Update to the latest version
   -v, --version            Print version and exit
   -h, --help               Show help
 
@@ -70,6 +71,7 @@ Examples:
   agent-sandbox --stop --agent claude  # stop only the claude sandbox
   agent-sandbox --stop ~/projects/foo  # stop all sandboxes for that path
   agent-sandbox --prune                # remove stale images
+  agent-sandbox --update               # update to the latest version
 EOF
 }
 
@@ -86,6 +88,7 @@ OPT_NO_SSH=false
 OPT_LIST=false
 OPT_STOP=false
 OPT_PRUNE=false
+OPT_UPDATE=false
 OPT_HELP=false
 OPT_EXTRA_MOUNTS=()
 OPT_WORKSPACE=""
@@ -132,6 +135,10 @@ while [[ $# -gt 0 ]]; do
 		OPT_PRUNE=true
 		shift
 		;;
+	--update)
+		OPT_UPDATE=true
+		shift
+		;;
 	-v | --version)
 		echo "agent-sandbox ${VERSION}"
 		exit 0
@@ -165,6 +172,126 @@ done
 if $OPT_HELP; then
 	usage
 	exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Dispatch: --update (early exit — does not need runtime or config)
+# ---------------------------------------------------------------------------
+
+do_update() {
+	# Detect Nix installation via SHARE_DIR (substituted at build time by both
+	# the Nix build and install.sh; Nix sets it to /nix/store/...).
+	case "$SHARE_DIR" in
+	/nix/store/*)
+		log "Installed via Nix. Update with: nix profile upgrade or update your flake input."
+		exit 0
+		;;
+	esac
+
+	# Query latest version from GitHub
+	log "Checking for updates..."
+	local api_response
+	api_response=$(curl -fsSL https://api.github.com/repos/mstruble/agent-sandbox/releases/latest 2>/dev/null) ||
+		die "Failed to check for updates. Check your internet connection."
+
+	# Extract tag_name from JSON without jq.
+	# Isolate the "tag_name" field first, then strip the optional leading 'v' prefix
+	# so latest_tag holds a bare semver (e.g. "1.2.3" not "v1.2.3").
+	local latest_tag
+	latest_tag=$(printf '%s' "$api_response" |
+		grep '"tag_name"' |
+		head -1 |
+		grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
+		sed 's/.*"v\{0,1\}\([^"]*\)"/\1/' ||
+		true)
+
+	if [[ -z "$latest_tag" ]]; then
+		die "Could not parse version from GitHub API response."
+	fi
+
+	# Validate the extracted version string before any further use.
+	# Reject anything that isn't a safe semver-like string to prevent
+	# path traversal or injection if the API response is crafted.
+	# Note: the empty-string case is already caught above; the explicit
+	# [[ -z ]] guard here makes the validation self-contained.
+	if [[ -z "$latest_tag" ]] || [[ "$latest_tag" =~ [^0-9A-Za-z._-] ]] || [[ "$latest_tag" == */* ]] || [[ "$latest_tag" == *..* ]]; then
+		die "GitHub API returned an invalid version string: '${latest_tag}'"
+	fi
+
+	# Compare versions
+	if [[ "$latest_tag" == "$VERSION" ]]; then
+		log "Already up to date (v${VERSION})."
+		exit 0
+	fi
+
+	log "Updating from v${VERSION} to v${latest_tag}..."
+
+	# Download install.sh from the specific release tag (not main) to ensure
+	# the installer matches the version being installed.
+	# Store in variable to allow env-var prefix injection (AGENT_SANDBOX_VERSION=...).
+	local install_script
+	install_script=$(curl -fsSL "https://raw.githubusercontent.com/mstruble/agent-sandbox/v${latest_tag}/install.sh" 2>/dev/null) ||
+		die "Failed to download installer."
+
+	# Sanity-check the downloaded content before executing it.
+	# Guards against CDN hiccups returning HTML or other non-script content.
+	if [[ "$install_script" != '#!/'* ]]; then
+		die "Downloaded installer does not look like a shell script (missing shebang)."
+	fi
+
+	# Verify install.sh integrity against the release SHA256SUMS file.
+	# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
+	_sha256sum() {
+		if command -v sha256sum &>/dev/null; then
+			sha256sum "$@"
+		elif command -v shasum &>/dev/null; then
+			shasum -a 256 "$@"
+		else
+			return 1
+		fi
+	}
+	local sums_url="https://github.com/mstruble/agent-sandbox/releases/download/v${latest_tag}/SHA256SUMS"
+	local sums_content
+	if sums_content=$(curl -fsSL "$sums_url" 2>/dev/null) && _sha256sum /dev/null &>/dev/null; then
+		# Extract the expected hash for install.sh; take only the first match
+		# (head -1) to guard against duplicate or crafted entries.
+		local expected_hash
+		expected_hash=$(printf '%s' "$sums_content" | grep ' install\.sh$' | head -1 | awk '{print $1}' || true)
+		if [[ -z "$expected_hash" ]]; then
+			warn "No entry for install.sh in SHA256SUMS for v${latest_tag} — skipping checksum verification"
+		else
+			log "Verifying installer checksum..."
+			# Capture _sha256sum output separately to detect tool failures
+			# before passing to awk (a partial hash would otherwise pass the
+			# non-empty check and produce a spurious mismatch error).
+			# Use printf '%s\n' to restore the trailing newline stripped by
+			# command substitution, so the hash matches the file-based hash
+			# in SHA256SUMS.
+			local raw_hash actual_hash
+			raw_hash=$(printf '%s\n' "$install_script" | _sha256sum) ||
+				die "Failed to compute installer checksum."
+			actual_hash=$(awk '{print $1}' <<<"$raw_hash")
+			if [[ -z "$actual_hash" ]]; then
+				die "Failed to parse installer checksum output."
+			fi
+			if [[ "$actual_hash" != "$expected_hash" ]]; then
+				die "install.sh checksum verification FAILED — aborting update. The download may be corrupt or tampered with."
+			fi
+			log "Checksum verified."
+		fi
+	else
+		warn "SHA256SUMS not available for v${latest_tag} or no sha256 tool found — skipping checksum verification"
+	fi
+
+	AGENT_SANDBOX_VERSION="$latest_tag" sh -c "$install_script" ||
+		die "Update failed."
+
+	log "Updated to v${latest_tag}."
+	exit 0
+}
+
+if $OPT_UPDATE; then
+	do_update
 fi
 
 # ---------------------------------------------------------------------------
