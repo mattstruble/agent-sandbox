@@ -302,7 +302,6 @@ CONFIG_FILE="${HOME}/.config/agent-sandbox/config.toml"
 
 # Config values with defaults
 CFG_AGENT="opencode"
-CFG_EXTRA_DOMAINS=()
 CFG_EXTRA_VARS=()
 CFG_FOLLOW_ALL_SYMLINKS=false
 CFG_EXTRA_PATHS=()
@@ -364,18 +363,6 @@ else:
 		fi
 		CFG_AGENT="$val"
 	fi
-
-	# [network] extra_domains (array)
-	# Require multi-label FQDNs (at least one dot) to match init-firewall.sh's HOSTNAME_REGEX.
-	# Rejects single-label names (e.g. "localhost"), trailing dots, and consecutive dots.
-	local domain_regex='^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
-	while IFS= read -r domain; do
-		[[ -z "$domain" ]] && continue
-		if ! [[ "$domain" =~ $domain_regex ]]; then
-			die "Config error: invalid domain in network.extra_domains: '$domain' (must be a valid multi-label FQDN)"
-		fi
-		CFG_EXTRA_DOMAINS+=("$domain")
-	done < <(_cfg_get "network.extra_domains")
 
 	# [env] extra_vars (array)
 	local var_regex='^[A-Za-z_][A-Za-z0-9_]*$'
@@ -691,14 +678,35 @@ if [[ -f "${HOME}/.gitconfig" ]]; then
 	MOUNT_FLAGS+=("-v" "${HOME}/.gitconfig:/home/sandbox/.gitconfig:ro${MOUNT_Z}")
 fi
 
+# Stage host config directories with resolved symlinks.
+# The container cannot follow symlinks that point outside the mount (e.g. Nix
+# store paths). Staging resolves them on the host where targets are accessible.
+# mktemp -d avoids predictable-path attacks; chmod 700 restricts access.
+# NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
+# exec (which replaces the process). The staged dir persists for the container's
+# lifetime — this is fine since the mount is read-only and permissions are tight.
+_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
+chmod 700 "$_stage_dir"
+trap 'rm -rf "$_stage_dir"' EXIT
+
 # OpenCode config (ro, only if dir exists)
 if [[ -d "${HOME}/.config/opencode" ]]; then
-	MOUNT_FLAGS+=("-v" "${HOME}/.config/opencode/:/host-config/opencode/:ro${MOUNT_Z}")
+	mkdir -p "$_stage_dir/opencode"
+	if cp -RL "${HOME}/.config/opencode/." "$_stage_dir/opencode/"; then
+		MOUNT_FLAGS+=("-v" "$_stage_dir/opencode:/host-config/opencode/:ro${MOUNT_Z}")
+	else
+		warn "Failed to stage opencode config (symlink resolution failed) — skipping"
+	fi
 fi
 
 # Claude config (ro, only if dir exists)
 if [[ -d "${HOME}/.claude" ]]; then
-	MOUNT_FLAGS+=("-v" "${HOME}/.claude/:/host-config/claude/:ro${MOUNT_Z}")
+	mkdir -p "$_stage_dir/claude"
+	if cp -RL "${HOME}/.claude/." "$_stage_dir/claude/"; then
+		MOUNT_FLAGS+=("-v" "$_stage_dir/claude:/host-config/claude/:ro${MOUNT_Z}")
+	else
+		warn "Failed to stage claude config (symlink resolution failed) — skipping"
+	fi
 fi
 
 # SSH agent socket (ro, unless --no-ssh or SSH_AUTH_SOCK not set)
@@ -710,7 +718,13 @@ if ! $OPT_NO_SSH && [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
 	_ssh_sock="${SSH_AUTH_SOCK}"
 	_ssh_sock="${_ssh_sock/#\~/$HOME}"
 	_ssh_sock="${_ssh_sock//\\/}"
-	if [[ -S "$_ssh_sock" ]]; then
+	if [[ "$(uname -s)" == "Darwin" && "$RUNTIME" == "podman" ]]; then
+		# Podman Machine uses virtiofs to share the host filesystem with the
+		# Linux VM. virtiofs does not support Unix domain sockets — attempting
+		# to bind-mount one causes a hard 'statfs: operation not supported'
+		# error. Skip SSH forwarding entirely on this combination.
+		warn "SSH agent forwarding is not supported with Podman on macOS (virtiofs limitation). Use Docker Desktop or pass --no-ssh to suppress."
+	elif [[ -S "$_ssh_sock" ]]; then
 		MOUNT_FLAGS+=("-v" "${_ssh_sock}:/tmp/ssh_auth_sock:ro${MOUNT_Z}")
 		SSH_FORWARDED=true
 	else
@@ -884,12 +898,6 @@ if $OPT_NO_SSH; then
 	ENV_FLAGS+=("-e" "AGENT_SANDBOX_NO_SSH=1")
 fi
 
-# AGENT_SANDBOX_EXTRA_DOMAINS (newline-separated)
-if [[ ${#CFG_EXTRA_DOMAINS[@]} -gt 0 ]]; then
-	EXTRA_DOMAINS_VAL=$(printf '%s\n' "${CFG_EXTRA_DOMAINS[@]}")
-	ENV_FLAGS+=("-e" "AGENT_SANDBOX_EXTRA_DOMAINS=${EXTRA_DOMAINS_VAL}")
-fi
-
 # ---------------------------------------------------------------------------
 # Session deduplication check
 # ---------------------------------------------------------------------------
@@ -919,6 +927,9 @@ RUN_CMD=(
 	-i
 	-t
 	--name "$CONTAINER_NAME"
+	--sysctl=net.ipv6.conf.all.disable_ipv6=1
+	--sysctl=net.ipv6.conf.default.disable_ipv6=1
+	--sysctl=net.ipv6.conf.lo.disable_ipv6=1
 	--cap-drop=ALL
 	--cap-add=NET_ADMIN
 	--cap-add=NET_RAW

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     make \
     gosu \
+    procps \
     iptables \
     ipset \
     iproute2 \
@@ -91,7 +92,7 @@ RUN timeout 120 bash -c "curl -fsSL https://opencode.ai/install | bash" \
 
 USER root
 
-RUN timeout 180 npm install -g @anthropic-ai/claude-code@2.1.87
+RUN timeout 180 npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.87
 
 # ─── Runtime configuration ────────────────────────────────────────────────────
 # The entrypoint starts as root to establish the iptables firewall, then drops

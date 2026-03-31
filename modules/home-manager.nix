@@ -15,9 +15,6 @@ let
     defaults = {
       agent = cfg.settings.defaultAgent;
     };
-    network = {
-      extra_domains = cfg.settings.network.extraDomains;
-    };
     env = {
       extra_vars = cfg.settings.env.extraVars;
     };
@@ -36,7 +33,6 @@ let
   # True when every setting is at its default; suppresses config file generation
   allDefaults =
     cfg.settings.defaultAgent == "opencode"
-    && cfg.settings.network.extraDomains == [ ]
     && cfg.settings.env.extraVars == [ ]
     && cfg.settings.workspace.followAllSymlinks == false
     && cfg.settings.mounts.extraPaths == [ ]
@@ -64,12 +60,6 @@ in
         ];
         default = "opencode";
         description = "Default agent when --agent is not passed.";
-      };
-
-      network.extraDomains = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [ ];
-        description = "Additional domains to allowlist in the network firewall.";
       };
 
       env.extraVars = lib.mkOption {

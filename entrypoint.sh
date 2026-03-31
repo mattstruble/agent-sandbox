@@ -66,7 +66,7 @@ fi
 
 # ─── Step 3: Apply OpenCode permission overrides ──────────────────────────────
 
-OPENCODE_CONFIG="$HOME/.config/opencode/config.json"
+OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
@@ -75,14 +75,13 @@ if [[ -f "$OPENCODE_CONFIG" ]]; then
 	# File exists — merge permission fields without removing other content
 	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX")
 	if jq '
-    .permissions.bash     = "allow" |
-    .permissions.edit     = "allow" |
-    .permissions.read     = "allow" |
-    .permissions.grep     = "allow" |
-    .permissions.patch    = "allow" |
-    .permissions.webfetch = "allow"
+    .permission.bash     = "allow" |
+    .permission.edit     = "allow" |
+    .permission.read     = "allow" |
+    .permission.grep     = "allow" |
+    .permission.webfetch = "allow"
   ' "$OPENCODE_CONFIG" >"$tmp"; then
-		if mv "$tmp" "$OPENCODE_CONFIG"; then
+		if mv -f "$tmp" "$OPENCODE_CONFIG"; then
 			log "Permission overrides applied."
 		else
 			rm -f "$tmp"
@@ -93,15 +92,14 @@ if [[ -f "$OPENCODE_CONFIG" ]]; then
 		warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
 	fi
 else
-	# File does not exist — create it with just the permissions object
+	# File does not exist — create it with just the permission object
 	cat >"$OPENCODE_CONFIG" <<'EOF'
 {
-  "permissions": {
+  "permission": {
     "bash": "allow",
     "edit": "allow",
     "read": "allow",
     "grep": "allow",
-    "patch": "allow",
     "webfetch": "allow"
   }
 }
