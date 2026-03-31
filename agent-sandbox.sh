@@ -10,6 +10,7 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
 fi
 
 SHARE_DIR="${AGENT_SANDBOX_SHARE_DIR:-@SHARE_DIR@}"
+VERSION="${AGENT_SANDBOX_VERSION:-@VERSION@}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,6 +42,7 @@ Options:
   --list                   List running agent-sandbox containers
   --stop                   Stop sandbox(es) for the given/current workspace
   --prune                  Remove old agent-sandbox images, keeping only the current hash
+  -v, --version            Print version and exit
   -h, --help               Show help
 
 Arguments:
@@ -122,6 +124,10 @@ while [[ $# -gt 0 ]]; do
 	--prune)
 		OPT_PRUNE=true
 		shift
+		;;
+	-v | --version)
+		echo "agent-sandbox ${VERSION}"
+		exit 0
 		;;
 	-h | --help)
 		OPT_HELP=true
