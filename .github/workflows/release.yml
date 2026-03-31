@@ -6,13 +6,14 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   retag-and-push:
     name: Retag & Push Release Image
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      packages: write
     steps:
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -74,3 +75,63 @@ jobs:
 
       - name: Push latest tag
         run: docker push ghcr.io/mstruble/agent-sandbox:latest
+
+  publish-tarball:
+    name: Publish Release Tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Derive semver from release tag
+        id: parse-tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Strip leading 'v' if present
+          SEMVER="${TAG#v}"
+          if [ -z "$SEMVER" ]; then
+            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
+            exit 1
+          fi
+          # Validate semver format to prevent injection via malicious tag names
+          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
+            exit 1
+          fi
+          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build tarball
+        env:
+          VERSION: ${{ steps.parse-tag.outputs.semver }}
+        run: |
+          STAGING="agent-sandbox-${VERSION}"
+
+          mkdir -p "${STAGING}/bin" "${STAGING}/share/agent-sandbox"
+
+          sed \
+            -e "s|@VERSION@|${VERSION}|g" \
+            -e 's|@SHARE_DIR@|~/.local/share/agent-sandbox|g' \
+            agent-sandbox.sh > "${STAGING}/bin/agent-sandbox" \
+            || { echo "ERROR: sed substitution failed" >&2; exit 1; }
+          # single-quoted above: ~ must remain a literal tilde in the installed script
+
+          [[ -s "${STAGING}/bin/agent-sandbox" ]] \
+            || { echo "ERROR: agent-sandbox binary is empty after substitution" >&2; exit 1; }
+
+          cp Containerfile entrypoint.sh init-firewall.sh \
+            "${STAGING}/share/agent-sandbox/"
+
+          chmod +x "${STAGING}/bin/agent-sandbox"
+
+          tar czf "${STAGING}.tar.gz" "${STAGING}/"
+
+      - name: Upload tarball to release
+        env:
+          VERSION: ${{ steps.parse-tag.outputs.semver }}
+        run: gh release upload "${GITHUB_REF_NAME}" "agent-sandbox-${VERSION}.tar.gz" --clobber
