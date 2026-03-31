@@ -37,6 +37,9 @@ Release Please watches main for conventional commits and opens a release PR that
 ## Open Questions
 - None.
 
+### Release tarball
+- [ ] Each GitHub Release includes an `agent-sandbox-<semver>.tar.gz` asset containing the launcher and support files for the non-Nix install path. See release-tarball story for details.
+
 ## Out of Scope
 - Pre-release versions or release channels.
 - Automatic `nix flake update` on release.

@@ -8,7 +8,7 @@ Behaviors covered:
 - The default agent is configurable.
 
 ## Summary
-Implements parsing of `~/.config/agent-sandbox/config.toml` using `dasel`. The config file is optional — all values have sensible defaults. When present, values are validated before use. The launcher reads the config early in startup and threads values into the appropriate places (container flags, environment variables, firewall script).
+Implements parsing of `~/.config/agent-sandbox/config.toml` using Python3 `tomllib`. The config file is optional — all values have sensible defaults. When present, values are validated before use. The launcher reads the config early in startup and threads values into the appropriate places (container flags, environment variables, firewall script).
 
 ## Acceptance Criteria
 - [ ] If `~/.config/agent-sandbox/config.toml` does not exist, the launcher uses all default values and does not error.
@@ -26,7 +26,7 @@ Implements parsing of `~/.config/agent-sandbox/config.toml` using `dasel`. The c
 - [ ] `[resources]` section: `memory` is a non-empty string (e.g., `"8g"`, `"16g"`). Invalid or empty values cause a non-zero exit. Defaults to `"8g"`.
 - [ ] `[resources]` section: `cpus` is a positive integer. Invalid or non-positive values cause a non-zero exit. Defaults to `4`.
 - [ ] Unrecognized sections or keys in the config file are silently ignored (forward compatibility).
-- [ ] The config file is parsed using `dasel`, which is declared as a Nix runtime dependency.
+- [ ] The config file is parsed using Python3 `tomllib` (3.11+), replacing the previous `dasel` dependency. See launcher-portability story for implementation details.
 
 ## Open Questions
 - None.

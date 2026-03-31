@@ -16,7 +16,7 @@ The flake packages the launcher script and support files (Containerfile, entrypo
 - [ ] The flake exposes `packages.${system}.default` and `apps.${system}.default` for all four targets: `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`.
 - [ ] The installed package places the launcher at `$out/bin/agent-sandbox` and support files at `$out/share/agent-sandbox/`.
 - [ ] `@SHARE_DIR@` in the launcher script is substituted with the absolute Nix store path to `$out/share/agent-sandbox` at build time.
-- [ ] Runtime dependencies (`podman`, `coreutils`, `gnused`, `gnugrep`, `jq`, `dasel`) are declared in the flake and available to the launcher without being on the user's `$PATH`.
+- [ ] Runtime dependencies (`podman`, `coreutils`) are declared in the flake and available to the launcher without being on the user's `$PATH`. `dasel`, `jq`, `gnused`, and `gnugrep` are no longer required (see launcher-portability story).
 - [ ] Another flake can reference `inputs.agent-sandbox.url = "github:mstruble/agent-sandbox"` and use `agent-sandbox.packages.${system}.default`.
 
 ## Open Questions

@@ -4,7 +4,7 @@
 PRD Capability Group: Continuous Integration
 Behaviors covered:
 - Every pull request to main runs lint checks, builds the container image, and scans it for vulnerabilities before merge.
-- ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`).
+- ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, `install.sh`).
 - `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
 - PR titles are validated against the conventional commit format.
 - Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR.
@@ -18,7 +18,7 @@ A `pr-checks.yml` workflow runs three parallel jobs on every PR to main: lint (S
 ## Acceptance Criteria
 
 ### Lint job
-- [ ] ShellCheck runs against `agent-sandbox.sh`, `entrypoint.sh`, and `init-firewall.sh`; the job fails if any script has warnings or errors.
+- [ ] ShellCheck runs against `agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, and `install.sh`; the job fails if any script has warnings or errors.
 - [ ] `nixfmt --check flake.nix` runs and fails the job if the file is not formatted.
 - [ ] `nix flake check` runs and fails the job if the flake does not evaluate.
 - [ ] PR title is validated against conventional commit format via `amannn/action-semantic-pull-request`; the job fails if the title does not match.

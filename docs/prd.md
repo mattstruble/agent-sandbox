@@ -17,6 +17,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - As a maintainer, I want automated semver releases driven by conventional commits, so that versioning is consistent and changelogs are generated automatically.
 - As a maintainer, I want PRs to be linted, scanned, and validated before merge, so that broken or insecure changes don't reach main.
 - As a maintainer, I want dependency update PRs opened automatically, so that pinned versions stay current without manual tracking.
+- As a developer without Nix, I want to install agent-sandbox with a single curl command on macOS, Linux, or WSL2, so that I can use the tool without adopting Nix.
 - As a NixOS, nix-darwin, or Home Manager user, I want to enable agent-sandbox declaratively in my Nix configuration and manage its settings through Nix options, so that the tool integrates with my existing system management workflow.
 
 ## Expected Behaviors
@@ -69,13 +70,31 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ### Distribution
 
+#### Cross-Platform Install (non-Nix)
+
+- The tool is installable without Nix via `curl -fsSL https://raw.githubusercontent.com/mstruble/agent-sandbox/main/install.sh | sh`.
+- Supported platforms: macOS (Intel and Apple Silicon), Linux (x86_64 and aarch64), and Windows via WSL2.
+- The only host prerequisite is a container runtime (Docker or Podman). The installer checks for one and errors with platform-specific install instructions if missing.
+- The installer does not require sudo.
+- The installer downloads a release tarball from GitHub Releases and extracts the launcher to `~/.local/bin/agent-sandbox` and support files to `~/.local/share/agent-sandbox/`.
+- If `~/.local/bin` is not on `$PATH`, the installer warns with shell-specific instructions for adding it.
+- A specific version can be installed by setting `AGENT_SANDBOX_VERSION` before running the installer.
+- The installer supports `--uninstall` to remove the launcher and support files. The config directory (`~/.config/agent-sandbox/`) is preserved.
+- `agent-sandbox --update` checks for a newer release and updates the launcher and support files in place.
+- When `--update` detects it is running from a Nix store path, it advises using Nix-native update methods instead.
+
+#### Launcher Portability
+
+- The launcher is compatible with bash 3.2+ and does not require GNU coreutils, GNU sed, GNU grep, or dasel on the host.
+- Config file parsing (`~/.config/agent-sandbox/config.toml`) uses Python3 `tomllib` (3.11+). Python3 is only required when the config file exists; users without a config file have no Python3 dependency.
+- Symlink resolution uses `realpath` with a Python3 fallback, replacing the GNU `readlink -f` dependency.
+- The launcher auto-detects Podman or Docker on `$PATH` (preferring Podman) and accepts `AGENT_SANDBOX_RUNTIME` or `--runtime` to override.
+
+#### Nix Distribution
+
 - The tool is runnable without installation via `nix run github:mstruble/agent-sandbox`.
 - The tool is installable into a user profile via `nix profile install github:mstruble/agent-sandbox`.
 - The tool is referenceable as a flake input from other Nix flakes.
-- The container image is published to GHCR at `ghcr.io/mstruble/agent-sandbox`.
-- Every push to main publishes a SHA-tagged image (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
-- Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
-- `agent-sandbox --version` prints the current version and exits.
 - The flake is structured using `flake-parts` to support both per-system outputs (packages, apps) and system-agnostic outputs (modules).
 - The flake exposes a NixOS module (`nixosModules.default`), a nix-darwin module (`darwinModules.default`), and a Home Manager module (`homeManagerModules.default`).
 - All three modules expose `programs.agent-sandbox.enable` to add the tool to the environment and `programs.agent-sandbox.package` to override the default package.
@@ -84,10 +103,17 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - When no settings are configured in the Home Manager module, no config file is generated (the launcher uses its built-in defaults).
 - The NixOS and nix-darwin modules do not manage agent-sandbox configuration.
 
+#### Image Publishing
+
+- The container image is published to GHCR at `ghcr.io/mstruble/agent-sandbox`.
+- Every push to main publishes a SHA-tagged image (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
+- Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
+- `agent-sandbox --version` prints the current version and exits.
+
 ### Continuous Integration
 
 - Every pull request to main runs lint checks, builds the container image, and scans it for vulnerabilities before merge.
-- ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`).
+- ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, `install.sh`).
 - `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
 - PR titles are validated against the conventional commit format (required for Release Please changelog generation).
 - Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR and every push to main.
@@ -102,6 +128,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Merging the release PR creates a GitHub Release with a semver tag.
 - The version source of truth is `flake.nix`; Release Please bumps it there.
 - The launcher supports `--version` (or `-v`) which prints the version and exits.
+- Each GitHub Release includes a platform-independent tarball (`agent-sandbox-<semver>.tar.gz`) containing the launcher (with version and share-dir substituted for the non-Nix install path) and support files.
 
 ### Dependency Management
 
@@ -122,4 +149,5 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Multi-architecture container images (amd64 only).
 - Per-project config files — configuration is user-global (`~/.config/agent-sandbox/config.toml`) only.
 - Support for agents other than OpenCode and Claude Code.
-- Windows support.
+- Native Windows support (PowerShell/cmd.exe). Windows is supported via WSL2 only.
+- Homebrew tap or other package manager distribution (curl|sh is the non-Nix install path).
