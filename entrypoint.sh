@@ -22,11 +22,21 @@ fi
 
 log "Starting sandbox for agent: $AGENT"
 
-# ─── Step 1: Establish network firewall (MUST BE FIRST) ───────────────────────
+# ─── Phase 1: Root operations ─────────────────────────────────────────────────
+# The container starts as root so the firewall can be established without sudo.
+# After firewall setup, we re-exec this script as the sandbox user via gosu.
 
-log "Running firewall setup..."
-sudo /init-firewall.sh
-log "Firewall established."
+if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
+	log "Running firewall setup..."
+	/init-firewall.sh
+	log "Firewall established."
+
+	# Re-exec as sandbox user; _SANDBOX_PHASE2 prevents infinite loop
+	log "Dropping to sandbox user..."
+	exec gosu sandbox env _SANDBOX_PHASE2=1 "$0"
+fi
+
+# ─── Phase 2: Sandbox operations (runs as sandbox user) ──────────────────────
 
 # ─── Step 2: Stage configs from read-only mounts to writable locations ────────
 
