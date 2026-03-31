@@ -1,0 +1,89 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "nix": {
+    "enabled": true
+  },
+  "dockerfile": {
+    "fileMatch": ["(^|/)Containerfile$", "(^|/)Dockerfile(\\..+)?$"]
+  },
+  "customManagers": [
+    {
+      "description": "gh CLI version in download URL (filename version updated via autoReplaceStringTemplate)",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "github\\.com/cli/cli/releases/download/v(?<currentValue>[\\d.]+)/gh_[\\d.]+_linux_amd64\\.tar\\.gz"
+      ],
+      "autoReplaceStringTemplate": "github.com/cli/cli/releases/download/v{{newValue}}/gh_{{newValue}}_linux_amd64.tar.gz",
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cli/cli",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "gh CLI version in install path and cleanup rm",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStringsStrategy": "any",
+      "matchStrings": [
+        "install -m 0755 /tmp/gh_(?<currentValue>[\\d.]+)_linux_amd64/bin/gh",
+        "rm -rf /tmp/gh\\.tar\\.gz /tmp/gh_(?<currentValue>[\\d.]+)_linux_amd64"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cli/cli",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "rtk version in download URL",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "github\\.com/rtk-ai/rtk/releases/download/v(?<currentValue>[\\d.]+)/rtk-x86_64-unknown-linux-musl\\.tar\\.gz"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rtk-ai/rtk",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "uv image tag and digest",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "ghcr\\.io/astral-sh/uv:(?<currentValue>[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/astral-sh/uv"
+    },
+    {
+      "description": "@anthropic-ai/claude-code npm package version",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "npm install -g @anthropic-ai/claude-code@(?<currentValue>[\\d.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@anthropic-ai/claude-code"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group all Containerfile tool updates into a single PR (custom.regex covers gh, rtk, uv, claude-code; dockerfile covers base image)",
+      "groupName": "container-deps",
+      "matchManagers": ["dockerfile", "custom.regex"],
+      "matchFileNames": ["Containerfile"],
+      "prBodyNotes": [
+        "⚠️ **Manual step required for gh and rtk bumps:** Update the SHA256 checksums on the `echo ... | sha256sum -c` lines in the Containerfile to match the new release. Verify against the official checksums files linked in the comments above each `RUN` block."
+      ]
+    },
+    {
+      "description": "Group Nix flake input updates into a single PR",
+      "groupName": "nix",
+      "matchManagers": ["nix"]
+    },
+    {
+      "description": "Group GitHub Actions version updates into a single PR (for future .github/workflows/)",
+      "groupName": "github-actions",
+      "matchManagers": ["github-actions"]
+    }
+  ]
+}
