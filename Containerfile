@@ -22,29 +22,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── gh CLI v2.89.0 ───────────────────────────────────────────────────────────
-# SHA256 of gh_2.89.0_linux_amd64.tar.gz verified against the official checksums
-# published at:
-# https://github.com/cli/cli/releases/download/v2.89.0/gh_2.89.0_checksums.txt
+# Version-pinned; downloaded over TLS. No SHA256 checksum — enables automated
+# version bumps via Renovate without requiring checksum updates.
 
 RUN curl -fsSL \
     "https://github.com/cli/cli/releases/download/v2.89.0/gh_2.89.0_linux_amd64.tar.gz" \
     -o /tmp/gh.tar.gz \
-    && echo "d0422caade520530e76c1c558da47daebaa8e1203d6b7ff10ad7d6faba3490d8  /tmp/gh.tar.gz" \
-    | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 /tmp/gh_2.89.0_linux_amd64/bin/gh /usr/local/bin/gh \
     && rm -rf /tmp/gh.tar.gz /tmp/gh_2.89.0_linux_amd64
 
 # ─── rtk v0.34.2 ──────────────────────────────────────────────────────────────
-# SHA256 of rtk-x86_64-unknown-linux-musl.tar.gz verified against the official
-# checksums published at:
-# https://github.com/rtk-ai/rtk/releases/download/v0.34.2/checksums.txt
+# Version-pinned; downloaded over TLS. No SHA256 checksum — enables automated
+# version bumps via Renovate without requiring checksum updates.
 
 RUN curl -fsSL \
     "https://github.com/rtk-ai/rtk/releases/download/v0.34.2/rtk-x86_64-unknown-linux-musl.tar.gz" \
     -o /tmp/rtk.tar.gz \
-    && echo "419b38216c8b1249cc72386d4bbcfe9e7808bde0af63159c826438da534f9e59  /tmp/rtk.tar.gz" \
-    | sha256sum -c - \
     && mkdir -p /tmp/rtk-extract \
     && tar -xzf /tmp/rtk.tar.gz -C /tmp/rtk-extract \
     && rtk_bin="$(find /tmp/rtk-extract -maxdepth 2 -name 'rtk' -type f | head -1)" \
@@ -84,8 +78,8 @@ COPY --chown=root:root --chmod=0755 entrypoint.sh /entrypoint.sh
 # channel for opencode. No pinned-binary release artifact is published by the
 # opencode project; the install script is the only supported install method.
 # ACCEPTED RISK: The install script is trusted based on TLS to opencode.ai.
-# If a pinned release binary becomes available, migrate to the curl+sha256+install
-# pattern used for gh and rtk above.
+# If a pinned release binary becomes available, migrate to a curl + version-pin
+# + SHA256 checksum verification + install pattern.
 # opencode db migrate runs immediately after install to pre-initialize the
 # database and avoid a hang on first container start (known issue).
 # Both steps are wrapped with timeout to prevent hung build layers.
