@@ -1,22 +1,19 @@
 # Story: User Configuration Parsing
 
 ## Source
-PRD Capability Groups: Sandbox Lifecycle, Network Sandboxing, Agent Configuration
+PRD Capability Groups: Sandbox Lifecycle, Agent Configuration
 Behaviors covered:
 - Resource limits are configurable by the user.
-- The user can extend the allowlist with additional domains via `~/.config/agent-sandbox/config.toml`.
 - The default agent is configurable.
 
 ## Summary
-Implements parsing of `~/.config/agent-sandbox/config.toml` using Python3 `tomllib`. The config file is optional — all values have sensible defaults. When present, values are validated before use. The launcher reads the config early in startup and threads values into the appropriate places (container flags, environment variables, firewall script).
+Implements parsing of `~/.config/agent-sandbox/config.toml` using Python3 `tomllib`. The config file is optional — all values have sensible defaults. When present, values are validated before use. The launcher reads the config early in startup and threads values into the appropriate places (container flags, environment variables).
 
 ## Acceptance Criteria
 - [ ] If `~/.config/agent-sandbox/config.toml` does not exist, the launcher uses all default values and does not error.
 - [ ] If the file exists but is malformed (invalid TOML syntax), the launcher exits with a non-zero code and a human-readable error message identifying the parse failure.
 - [ ] `[defaults]` section: `agent` is validated against known agents (`opencode`, `claude`). An unrecognized value causes a non-zero exit with a clear error.
 - [ ] `[defaults]` section: if `agent` is not set, defaults to `opencode`.
-- [ ] `[network]` section: `extra_domains` is a list of strings. Each entry is validated against `^[a-zA-Z0-9]([a-zA-Z0-9\-\.]+)?$` before use. Invalid entries cause a non-zero exit with a clear error.
-- [ ] `[network]` section: if `extra_domains` is not set, defaults to an empty list.
 - [ ] `[env]` section: `extra_vars` is a list of strings naming environment variables to forward. Each entry is validated as a non-empty string matching `^[A-Za-z_][A-Za-z0-9_]*$`. Invalid entries cause a non-zero exit with a clear error.
 - [ ] `[env]` section: if `extra_vars` is not set, defaults to an empty list. Only the default allowlist of API keys is forwarded.
 - [ ] `[workspace]` section: `follow_all_symlinks` is a boolean. Defaults to `false`. When `true`, `--follow-symlinks` includes dotfile directories.

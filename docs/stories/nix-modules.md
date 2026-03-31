@@ -42,7 +42,6 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
 - [ ] `containerPackage` defaults to `pkgs.podman` when `pkgs.stdenv.isLinux`, `null` otherwise.
 - [ ] Exposes typed options under `programs.agent-sandbox.settings`:
   - `defaultAgent` — `enum [ "opencode" "claude" ]`, default `"opencode"`.
-  - `network.extraDomains` — `listOf str`, default `[]`.
   - `env.extraVars` — `listOf str`, default `[]`.
   - `workspace.followAllSymlinks` — `bool`, default `false`.
   - `mounts.extraPaths` — `listOf str`, default `[]`.
@@ -50,7 +49,7 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
   - `resources.cpus` — `ints.positive`, default `4`.
 - [ ] When any setting differs from defaults, generates `~/.config/agent-sandbox/config.toml` via `xdg.configFile` using `pkgs.formats.toml`.
 - [ ] When all settings are at defaults, no config file is generated.
-- [ ] Generated TOML uses snake_case keys matching what the launcher expects (`extra_domains`, `extra_vars`, `follow_all_symlinks`, `extra_paths`).
+- [ ] Generated TOML uses snake_case keys matching what the launcher expects (`extra_vars`, `follow_all_symlinks`, `extra_paths`).
 - [ ] Module lives at `modules/home-manager.nix`.
 
 ### Updates to existing files

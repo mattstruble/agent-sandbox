@@ -11,7 +11,7 @@
 - Agent dotfiles and git config staged from the host then made writable inside the container
 - `rtk` pre-configured for 60-90% token savings on every tool call
 - SSH credentials forwarded via socket — no private keys enter the container
-- An iptables allowlist restricting outbound traffic to known-good AI API endpoints, GitHub, and DNS/SSH
+- An iptables port-based network filter restricting outbound traffic to HTTP/HTTPS, DNS (pinned to container resolver), and SSH (optional)
 - Deterministic container naming so multiple instances run in parallel without collision
 
 The container image is built locally on first use and cached by Containerfile content hash, or pulled from GHCR (`ghcr.io/mstruble/agent-sandbox`). Quick standup and teardown; supports many parallel sessions.
@@ -42,7 +42,7 @@ agent-sandbox/
 ├── agent-sandbox.sh            # Launcher script  → installed to $out/bin/
 ├── Containerfile               # Image definition → installed to $out/share/agent-sandbox/
 ├── entrypoint.sh               # Container entrypoint → $out/share/agent-sandbox/
-├── init-firewall.sh            # iptables allowlist  → $out/share/agent-sandbox/
+├── init-firewall.sh            # iptables port-based network filter → $out/share/agent-sandbox/
 └── renovate.json               # Renovate dependency update configuration
 ```
 
@@ -105,8 +105,8 @@ Examples:
 
 | Package | Method |
 |---|---|
-| bash, curl, git, make, gosu | apt |
-| iptables, ipset, iproute2, dnsutils | apt |
+| bash, curl, git, make, gosu, procps | apt |
+| iptables, iproute2, dnsutils | apt |
 | jq, aggregate, ca-certificates | apt |
 | nodejs, npm | apt |
 | `gh` CLI | curl from GitHub releases (version-pinned) |
@@ -171,11 +171,11 @@ Additional variables can be forwarded via `config.toml` `[env]` `extra_vars`. Va
 
 Runs inside the container in this order:
 
-1. Run `/init-firewall.sh` as root to establish iptables allowlist and disable IPv6 — **first**, before any other step
+1. Run `/init-firewall.sh` as root to establish iptables port-based network filter and disable IPv6 — **first**, before any other step
 2. Drop to the `sandbox` user via `gosu`; steps 3–7 run as `sandbox`
 3. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 4. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-5. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/config.json`; create the file if absent
+5. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
 6. Based on `$AGENT` env var (set by launcher):
    - `opencode`: run `rtk init -g --opencode`
    - `claude`: run `rtk init -g`
@@ -187,53 +187,44 @@ The firewall runs first to eliminate any unprotected network window. `rtk init` 
 
 ---
 
-## Network Allowlist (`init-firewall.sh`)
+## Network Filter (`init-firewall.sh`)
 
-Adapted from the Claude Code devcontainer firewall script. Uses `iptables` and `ipset` to establish a strict allowlist before any agent code runs.
+Uses `iptables` to establish a port-based network filter before any agent code runs. The filter restricts outbound traffic by protocol and port rather than by destination IP, allowing the agent to reach any HTTP/HTTPS server — this is intentional, as agents need unrestricted web access for MCP servers, documentation, web browsing, and diverse API endpoints that cannot be enumerated in advance.
 
 **First actions on start:**
-- Disable IPv6: `sysctl -w net.ipv6.conf.all.disable_ipv6=1` — prevents firewall bypass via IPv6
-- Flush existing iptables rules and destroy any prior ipsets
+- Disable IPv6: `sysctl -w net.ipv6.conf.all.disable_ipv6=1` (defense-in-depth; primary mechanism is `--sysctl` flags at container creation). Hard verification via `/proc/sys/net/ipv6/conf/all/disable_ipv6` — fails closed if IPv6 cannot be disabled.
+- Flush existing iptables rules
 
-**Always allowed:**
-- DNS (UDP port 53) — restricted to the container's configured resolver IP (read from `/etc/resolv.conf` at startup). This mitigates DNS tunneling to attacker-controlled nameservers.
-- SSH outbound (TCP port 22) + established responses inbound. When `--no-ssh` is passed, the launcher sets `AGENT_SANDBOX_NO_SSH=1` in the container environment; `init-firewall.sh` reads this variable and blocks TCP port 22 as well.
-- Localhost (`lo` interface, both directions)
-- Host gateway subnet (detected at runtime via `ip route`)
+**Allowed traffic:**
+- Loopback (`lo` interface, both directions)
+- Established/related connections (conntrack)
+- DNS (UDP/TCP port 53) — restricted to the container's configured resolver IP only (read from `/etc/resolv.conf` at startup). DNS to any other destination is explicitly rejected. This mitigates DNS tunneling to attacker-controlled nameservers.
+- HTTP outbound (TCP port 80) — to any destination
+- HTTPS outbound (TCP port 443) — to any destination
+- SSH outbound (TCP port 22) — conditional. When `--no-ssh` is passed, the launcher sets `AGENT_SANDBOX_NO_SSH=1`; `init-firewall.sh` reads this and blocks TCP 22.
 
-**Allowlisted external destinations** (resolved to IPs at container start, stored in an `ipset hash:net`):
+**Blocked traffic:**
+- All IPv6 (disabled via sysctl + ip6tables DROP policies)
+- All non-HTTP/HTTPS/SSH outbound TCP ports
+- All UDP except DNS to the pinned resolver
+- All ICMP and other protocols not matching the above
+- All unsolicited inbound traffic
 
-| Domain / Source | Purpose |
-|---|---|
-| `api.anthropic.com` | Claude API |
-| `api.openai.com` | OpenAI API |
-| `openrouter.ai` | OpenRouter multi-provider |
-| `api.mistral.ai` | Mistral API |
-| `opencode.ai` | OpenCode auth / telemetry |
-| GitHub IP ranges | Fetched live from `api.github.com/meta` (web + api + git ranges) |
-| AWS Bedrock IP ranges | Fetched from `ip-ranges.amazonaws.com`, filtered to `BEDROCK` service |
-| `registry.npmjs.org` | npm (used by claude-code) |
-| `sentry.io` | Agent error reporting |
-| `statsig.com`, `statsig.anthropic.com` | Agent telemetry |
+**Default policy:** REJECT all INPUT and OUTPUT not matching the above (ICMP admin-prohibited), providing immediate failure feedback rather than silent timeouts. Default chain policies are DROP as a catch-all.
 
-**IP range fetch resilience:** If `api.github.com/meta` or `ip-ranges.amazonaws.com` is unreachable, the firewall logs a warning and continues without those ranges. The agent starts but may lack connectivity to GitHub or AWS Bedrock. Domain-based allowlist entries (e.g., `api.anthropic.com`) are resolved via `dig` and are not affected by IP range fetch failures.
-
-**Default policy:** REJECT all INPUT and OUTPUT not matching the above (ICMP admin-prohibited), providing immediate failure feedback rather than silent timeouts.
-
-**User-extensible** via `~/.config/agent-sandbox/config.toml`. The launcher validates `extra_domains` entries against `^[a-zA-Z0-9]([a-zA-Z0-9\-\.]+)?$` before starting the container (fail fast). Valid entries are serialized into `AGENT_SANDBOX_EXTRA_DOMAINS` (newline-separated). `init-firewall.sh` also validates each entry as defense-in-depth before resolving and adding it to the ipset.
+**Post-setup verification:** Two tests validate the firewall is working correctly:
+1. TCP port 9 (discard) to an external IP must be blocked — confirms non-HTTP ports are rejected
+2. TCP port 443 to an external IP must succeed — confirms ACCEPT rules are applied (catches misconfigured rules that block everything)
 
 ---
 
 ## User Configuration (`~/.config/agent-sandbox/config.toml`)
 
-Optional. All fields have defaults. If the file is missing, all defaults apply. If the file exists but is malformed, the launcher exits with a clear error message. Parsed using `dasel`.
+Optional. All fields have defaults. If the file is missing, all defaults apply. If the file exists but is malformed, the launcher exits with a clear error message. Parsed using Python 3.11+ `tomllib`.
 
 ```toml
 [defaults]
 agent = "opencode"              # default agent when --agent is not passed
-
-[network]
-extra_domains = []              # additional domains to allowlist
 
 [env]
 extra_vars = []                 # additional env vars to forward (e.g. ["DEEPSEEK_API_KEY"])
@@ -272,7 +263,7 @@ The launcher also has `@VERSION@` replaced with the `version` value from the der
 **Runtime inputs** (declared in flake, available automatically via `nix run`):
 - `podman`
 - `coreutils`, `gnused`, `gnugrep`
-- `jq` (for parsing AWS/GitHub IP range JSON responses and patching `opencode.json`)
+- `jq` (for patching `opencode.json`)
 - `dasel` (for reading `config.toml`)
 
 **Supported systems:** `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`
@@ -322,7 +313,6 @@ Adds `package` and `containerPackage` (when non-null) to `home.packages`. Additi
 | Option | Type | Default | config.toml key |
 |---|---|---|---|
 | `settings.defaultAgent` | `enum [ "opencode" "claude" ]` | `"opencode"` | `defaults.agent` |
-| `settings.network.extraDomains` | `listOf str` | `[]` | `network.extra_domains` |
 | `settings.env.extraVars` | `listOf str` | `[]` | `env.extra_vars` |
 | `settings.workspace.followAllSymlinks` | `bool` | `false` | `workspace.follow_all_symlinks` |
 | `settings.mounts.extraPaths` | `listOf str` | `[]` | `mounts.extra_paths` |
@@ -342,7 +332,6 @@ When all settings are at their defaults, no config file is generated — the lau
     enable = true;
     settings = {
       defaultAgent = "claude";
-      network.extraDomains = [ "api.internal.corp" ];
       resources.memory = "16g";
       resources.cpus = 8;
     };
@@ -472,16 +461,15 @@ Configured on the repository (not via workflow):
 | gosu privilege drop | Root → sandbox via `gosu`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox |
 | Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW |
 | Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with gosu (syscall-based) |
-| IPv6 | Disabled via sysctl in init-firewall.sh | Eliminates iptables bypass via IPv6 |
+| IPv6 | Disabled via `--sysctl` at container creation + defense-in-depth sysctl in init-firewall.sh; hard-verified via `/proc` | Eliminates iptables bypass via IPv6 |
 | Firewall ordering | Firewall runs first in entrypoint | No unprotected network window before agent starts |
+| Port-based network filter | Allow TCP 80/443 to any destination; block all other outbound | Agents need unrestricted web access for MCP servers, documentation, APIs, and web browsing; IP-based allowlisting is infeasible |
 | Input sanitization | Workspace basename → `[a-z0-9-]`; path via `realpath` | Prevents name injection and mount ambiguity |
 | Resource limits | `--memory=8g --cpus=4` default, user-configurable | Prevents runaway agents from starving the host |
-| Domain validation | Hostname regex before `dig` | Prevents injection via extra_domains config |
 | API key allowlist | Explicit list, not glob | Prevents leaking unrelated secrets into the container |
 | Symlink opt-in | `--follow-symlinks` required, dotfile dirs denied | Prevents accidental exposure of `~/.ssh`, `~/.gnupg`, etc. |
 | DNS pinning | UDP 53 restricted to container resolver | Mitigates DNS tunneling exfiltration |
 | Binary pinning | Version-pinned downloads over TLS | Enables automated Renovate updates; consistent trust model across all deps |
-| IP range fetch | Best-effort with warning | Graceful degradation when GitHub/AWS endpoints are unreachable |
 | Release automation | Release Please with conventional commits | Deterministic semver from commit history; auto-generated changelogs |
 | Image publishing | SHA on main, semver+latest on release | Every main commit is pullable; releases are stable, never rebuilt |
 | Release re-tag | Pull existing SHA image, re-tag | Release image is byte-identical to what was tested on main |
@@ -498,22 +486,22 @@ Configured on the repository (not via workflow):
 
 ## Security Model
 
-The container boundary is the primary trust line. The network firewall is defense-in-depth. This section documents known trust boundaries and accepted risks.
+The container boundary is the primary trust line. The network filter is defense-in-depth — it restricts protocols and ports but does not restrict destination IPs. This section documents known trust boundaries and accepted risks.
 
 **Trust boundaries:**
 
+- **Unrestricted HTTPS egress.** The firewall allows outbound TCP 80 and 443 to any destination. This is required for agents to access MCP servers, web documentation, APIs, and arbitrary web resources. The trade-off is that a misbehaving agent can exfiltrate data to any HTTPS endpoint. The container boundary, capability dropping, and `no-new-privileges` are the primary isolation mechanisms; the network filter prevents non-web protocols (raw TCP, UDP, ICMP) from being used as exfiltration channels.
 - **SSH agent socket.** The forwarded `SSH_AUTH_SOCK` allows the container to use all keys loaded in the host's SSH agent to authenticate to any SSH server. Port 22 is open outbound. This is required for git-over-SSH but means a misbehaving agent can authenticate as the user to arbitrary SSH hosts. Use `--no-ssh` if git-over-SSH is not needed.
 - **Workspace write access.** The agent has full read-write access to the mounted workspace. It can modify `.git/hooks`, `.github/workflows`, `Makefile`, or other files that may execute on the host after the session. Review agent changes before running host-side automation.
-- **Broad IP ranges.** GitHub IP ranges (from `api.github.com/meta`) include GitHub Pages, Actions, and other services beyond git and the API. AWS Bedrock CIDRs cover large IP blocks. A determined attacker could host a receiver within these ranges. SNI-based filtering would mitigate this but is not implemented due to complexity.
-- **Telemetry domains.** `sentry.io` and `statsig.com` are allowlisted for agent error reporting. These are low-risk exfiltration vectors compared to GitHub and AWS but are reachable from the container.
 - **DNS.** DNS queries are pinned to the container's configured resolver (from `/etc/resolv.conf`). This mitigates tunneling to attacker-controlled nameservers but does not prevent all DNS-based exfiltration techniques (e.g., encoding data in queries to domains that resolve through the pinned resolver's upstream chain).
 
 **Mitigations in place:**
 
 - Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` only, for iptables)
 - `no-new-privileges` prevents execve-based privilege escalation
-- IPv6 disabled to prevent firewall bypass
+- IPv6 disabled via `--sysctl` at container creation + defense-in-depth sysctl in entrypoint; hard-verified via `/proc`
 - Firewall established before any agent code runs
+- Non-web protocols blocked (only TCP 80/443/22 and pinned DNS permitted)
 - API keys restricted to an explicit allowlist (not a glob pattern)
 - Symlink auto-mounting is opt-in and denies dotfile directories by default
 - Resource limits prevent host starvation
