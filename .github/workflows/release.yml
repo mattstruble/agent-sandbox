@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retag-and-push:
+    name: Retag & Push Release Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive semver from release tag
+        id: parse-tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Strip leading 'v' if present
+          SEMVER="${TAG#v}"
+          if [ -z "$SEMVER" ]; then
+            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
+            exit 1
+          fi
+          # Validate semver format to prevent injection via malicious tag names
+          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
+            exit 1
+          fi
+          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SHA-tagged image to be available
+        env:
+          IMAGE: ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
+        run: |
+          # publish-image.yml may still be running when this workflow fires.
+          # Retry for up to 30 minutes (30 attempts × 60s).
+          for i in $(seq 1 30); do
+            if docker pull "${IMAGE}"; then
+              echo "Image available after attempt ${i}"
+              exit 0
+            fi
+            echo "Attempt ${i}/30: image not yet available, retrying in 60s..."
+            sleep 60
+          done
+          echo "ERROR: image ${IMAGE} not available after 30 minutes" >&2
+          exit 1
+
+      - name: Retag as semver
+        env:
+          SEMVER: ${{ steps.parse-tag.outputs.semver }}
+          SHA: ${{ github.sha }}
+        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:${SEMVER}
+
+      - name: Retag as latest
+        env:
+          SHA: ${{ github.sha }}
+        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:latest
+
+      - name: Push semver tag
+        env:
+          SEMVER: ${{ steps.parse-tag.outputs.semver }}
+        run: docker push ghcr.io/mstruble/agent-sandbox:${SEMVER}
+
+      - name: Push latest tag
+        run: docker push ghcr.io/mstruble/agent-sandbox:latest

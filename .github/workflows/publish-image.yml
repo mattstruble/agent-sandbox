@@ -1,0 +1,55 @@
+name: Publish Image
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, Scan & Push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build -f Containerfile \
+            --label org.opencontainers.image.source=https://github.com/mstruble/agent-sandbox \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -t agent-sandbox:ci-test \
+            -t ghcr.io/mstruble/agent-sandbox:${{ github.sha }} \
+            .
+
+      - name: Trivy container scan
+        uses: aquasecurity/trivy-action@v0.30.0
+        with:
+          image-ref: agent-sandbox:ci-test
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Push SHA-tagged image
+        run: docker push ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
