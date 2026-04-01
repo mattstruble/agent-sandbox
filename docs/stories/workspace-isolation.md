@@ -28,8 +28,8 @@ Ensures the workspace mount is the only host filesystem path accessible inside t
 - [ ] Duplicate targets (multiple symlinks pointing to the same directory) are mounted only once.
 
 ### Dotfile directory protection
-- [ ] When `--follow-symlinks` is active, symlink targets whose basename starts with `.` (e.g., `.ssh`, `.gnupg`, `.aws`, `.config`) are skipped with a warning printed to stderr.
-- [ ] The warning identifies which symlink was skipped and why (dotfile directory protection).
+- [ ] When `--follow-symlinks` is active, symlink targets whose basename starts with `.` (e.g., `.ssh`, `.gnupg`, `.aws`, `.config`) are skipped with a warning printed to stderr. These directories commonly contain credentials and private keys.
+- [ ] The warning identifies which symlink was skipped and why (dotfile directory protection, may contain credentials).
 - [ ] `--follow-all-symlinks` overrides the dotfile protection — all symlink targets are mounted, including dotfile directories.
 - [ ] `follow_all_symlinks = true` in `config.toml` `[workspace]` section has the same effect as `--follow-all-symlinks`.
 - [ ] `--follow-all-symlinks` implies `--follow-symlinks` (no need to pass both).

@@ -142,7 +142,7 @@ Host agent config directories are **staged** at read-only mount points rather th
 
 **Symlink auto-detection** is disabled by default. When `--follow-symlinks` is passed, the launcher scans the workspace directory at depth 1. For each entry that is a symlink resolving to a directory outside the workspace, it adds a read-write bind mount at the target's absolute path (`-v <target>:<target>:rw,z`). Targets are deduplicated. If a symlink target does not exist on the host, the launcher prints a warning and skips it. Symlinks resolving to paths within the workspace are skipped (already accessible).
 
-**Dotfile directory protection:** Even with `--follow-symlinks`, symlink targets whose basename starts with `.` (e.g., `.ssh`, `.gnupg`, `.aws`, `.config`) are skipped with a warning. This prevents accidental exposure of sensitive host directories. To override this protection and mount dotfile directories, pass `--follow-all-symlinks` (or set `follow_all_symlinks = true` in `config.toml` `[workspace]` section).
+**Dotfile directory protection:** Even with `--follow-symlinks`, symlink targets whose basename starts with `.` (e.g., `.ssh`, `.gnupg`, `.aws`, `.config`) are skipped with a warning. These directories commonly contain credentials and private keys, so mounting them into the sandbox would undermine its isolation. To override this protection and mount dotfile directories, pass `--follow-all-symlinks` (or set `follow_all_symlinks = true` in `config.toml` `[workspace]` section). Use this only when you understand which dotfile directories will be exposed.
 
 **SSH:** `SSH_AUTH_SOCK=/tmp/ssh_auth_sock` is set in the container environment. No SSH private keys enter the container.
 
@@ -230,8 +230,8 @@ agent = "opencode"              # default agent when --agent is not passed
 extra_vars = []                 # additional env vars to forward (e.g. ["DEEPSEEK_API_KEY"])
 
 [workspace]
-follow_symlinks = false         # when true, mount depth-1 symlink targets (skips dotfile dirs)
-follow_all_symlinks = false     # when true, --follow-symlinks includes dotfile directories
+follow_symlinks = false         # mount depth-1 symlink targets (skips dotfile dirs)
+follow_all_symlinks = false     # include dotfile directories (.ssh, .gnupg, etc.)
 
 [mounts]
 extra_paths = []                # additional host paths to mount (e.g. ["~/.kube", "~/.docker/config.json"])

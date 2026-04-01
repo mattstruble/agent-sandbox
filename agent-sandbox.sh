@@ -43,7 +43,7 @@ Options:
   -a, --agent <name>       Agent to run: opencode (default) or claude
   -b, --build              Force rebuild image before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
-  --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories
+  --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories (.ssh, .gnupg, etc.)
   --mount <path>           Mount an extra host path read-only (repeatable; append :rw for read-write)
   --no-ssh                 Skip SSH agent socket forwarding
   --list                   List running agent-sandbox containers
@@ -751,7 +751,8 @@ fi
 # ---------------------------------------------------------------------------
 
 # Appends read-write bind mounts for depth-1 workspace symlinks pointing outside the workspace.
-# Skips dotfile targets unless OPT_FOLLOW_ALL_SYMLINKS is true.
+# Skips dotfile targets (e.g. .ssh, .gnupg) unless OPT_FOLLOW_ALL_SYMLINKS is true,
+# because dotfile directories commonly contain credentials and private keys.
 collect_symlink_mounts() {
 	# Newline-delimited list of already-seen resolved targets (deduplication)
 	local _seen_targets=""
@@ -787,7 +788,7 @@ collect_symlink_mounts() {
 		tbase=$(basename "$target")
 		if [[ "$tbase" == .* ]]; then
 			if ! $OPT_FOLLOW_ALL_SYMLINKS; then
-				warn "Skipping dotfile symlink target (use --follow-all-symlinks to include): $target"
+				warn "Skipping dotfile symlink target (may contain credentials; use --follow-all-symlinks to include): $target"
 				continue
 			fi
 		fi

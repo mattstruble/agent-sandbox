@@ -17,7 +17,7 @@ Implements parsing of `~/.config/agent-sandbox/config.toml` using Python3 `tomll
 - [ ] `[env]` section: `extra_vars` is a list of strings naming environment variables to forward. Each entry is validated as a non-empty string matching `^[A-Za-z_][A-Za-z0-9_]*$`. Invalid entries cause a non-zero exit with a clear error.
 - [ ] `[env]` section: if `extra_vars` is not set, defaults to an empty list. Only the default allowlist of API keys is forwarded.
 - [ ] `[workspace]` section: `follow_symlinks` is a boolean. Defaults to `false`. When `true`, mounts depth-1 symlink targets from the workspace, skipping dotfile directories.
-- [ ] `[workspace]` section: `follow_all_symlinks` is a boolean. Defaults to `false`. When `true`, `--follow-symlinks` includes dotfile directories.
+- [ ] `[workspace]` section: `follow_all_symlinks` is a boolean. Defaults to `false`. When `true`, includes dotfile directories (`.ssh`, `.gnupg`, etc.) when following symlinks. These directories are skipped by default because they commonly contain credentials and private keys.
 - [ ] `[mounts]` section: `extra_paths` is a list of strings. Each entry is a path (absolute or `~/`-prefixed). Defaults to an empty list.
 - [ ] `[mounts]` section: entries may include a `:rw` suffix to request read-write access (e.g., `"~/.kube:rw"`). Entries without a suffix default to read-only.
 - [ ] `[mounts]` section: entries that are empty strings or contain only whitespace cause a non-zero exit with a clear error.

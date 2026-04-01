@@ -79,7 +79,8 @@ agent-sandbox [OPTIONS] [WORKSPACE]
 |---|---|
 | `-a, --agent <name>` | Agent to run: `opencode` (default) or `claude` |
 | `-b, --build` | Force image rebuild before running |
-| `--follow-symlinks` | Mount depth-1 symlink targets from the workspace |
+| `--follow-symlinks` | Mount depth-1 symlink targets from the workspace (skips dotfile dirs) |
+| `--follow-all-symlinks` | Like `--follow-symlinks` but includes dotfile directories (see [Symlink following](#symlink-following)) |
 | `--mount <path>` | Mount an extra host path read-only (repeatable; append `:rw` for read-write) |
 | `--no-ssh` | Skip SSH agent socket forwarding |
 | `--list` | List running sandbox containers |
@@ -109,7 +110,8 @@ agent = "opencode"                # default agent
 extra_vars = ["DEEPSEEK_API_KEY"] # additional env vars to forward
 
 [workspace]
-follow_all_symlinks = false       # include dotfile dirs when following symlinks
+follow_symlinks = false           # mount depth-1 symlink targets (skips dotfile dirs)
+follow_all_symlinks = false       # include dotfile directories (.ssh, .gnupg, etc.) — see Security
 
 [mounts]
 extra_paths = ["~/.kube"]         # additional host paths to mount
@@ -142,6 +144,22 @@ Every container runs with:
   correctly before the agent starts
 
 See [DESIGN.md](DESIGN.md) for the full security model and architecture.
+
+### Symlink following
+
+By default, symlinks inside the workspace that point outside it are
+unresolvable in the container. The `--follow-symlinks` flag scans the
+workspace at depth 1 and bind-mounts external directory targets into the
+container.
+
+Dotfile directories (names starting with `.`) are **skipped by default**
+because they commonly contain credentials and private keys (`.ssh`,
+`.gnupg`, `.aws`, `.config`). Mounting these into the sandbox would
+undermine its isolation.
+
+To include dotfile directories, pass `--follow-all-symlinks` or set
+`follow_all_symlinks = true` in config.toml. Use this only when you
+understand which dotfile directories will be exposed.
 
 ## Requirements
 
