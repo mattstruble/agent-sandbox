@@ -31,6 +31,13 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 	/init-firewall.sh
 	log "Firewall established."
 
+	log "Starting chronyd..."
+	if chronyd; then
+		log "chronyd started."
+	else
+		warn "chronyd failed to start — continuing without time synchronization."
+	fi
+
 	# Re-exec as sandbox user; _SANDBOX_PHASE2 prevents infinite loop
 	log "Dropping to sandbox user..."
 	exec gosu sandbox env _SANDBOX_PHASE2=1 "$0"

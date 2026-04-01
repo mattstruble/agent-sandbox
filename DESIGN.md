@@ -11,7 +11,7 @@
 - Agent dotfiles and git config staged from the host then made writable inside the container
 - `rtk` pre-configured for 60-90% token savings on every tool call
 - SSH credentials forwarded via socket — no private keys enter the container
-- An iptables port-based network filter restricting outbound traffic to HTTP/HTTPS, DNS (pinned to container resolver), and SSH (optional)
+- An iptables port-based network filter restricting outbound traffic to HTTP/HTTPS, DNS (pinned to container resolver), NTP (pinned to Cloudflare IPs), and SSH (optional)
 - Deterministic container naming so multiple instances run in parallel without collision
 
 The container image is built locally on first use and cached by Containerfile content hash, or pulled from GHCR (`ghcr.io/mstruble/agent-sandbox`). Quick standup and teardown; supports many parallel sessions.
@@ -106,8 +106,8 @@ Examples:
 | Package | Method |
 |---|---|
 | bash, curl, git, make, gosu, procps | apt |
-| iptables, iproute2, dnsutils | apt |
-| jq, aggregate, ca-certificates | apt |
+| iptables, iproute2, dnsutils, chrony | apt |
+| jq, ipset, ca-certificates | apt |
 | nodejs, npm | apt |
 | `gh` CLI | curl from GitHub releases (version-pinned) |
 | `uv` | copied from `ghcr.io/astral-sh/uv` (pinned digest) |
@@ -157,7 +157,7 @@ Host agent config directories are **staged** at read-only mount points rather th
 
 Additional variables can be forwarded via `config.toml` `[env]` `extra_vars`. Variables not in the default list or `extra_vars` are never forwarded — this prevents accidental leakage of unrelated secrets (e.g., `DATABASE_API_KEY`, `STRIPE_API_KEY`) into the container. Each variable is forwarded only if present in the host environment.
 
-**Container capabilities:** `--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW` — all capabilities dropped first, then only what iptables requires is added back.
+**Container capabilities:** `--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW --cap-add=SETUID --cap-add=SETGID --cap-add=SYS_TIME` — all capabilities dropped first, then only what iptables, gosu, and chronyd require is added back. `SETUID`/`SETGID` are required for `gosu` to drop privileges; `SYS_TIME` is required for chronyd to step the system clock.
 
 **Privilege escalation prevention:** `--security-opt=no-new-privileges` prevents any process inside the container from gaining elevated privileges.
 
@@ -172,14 +172,15 @@ Additional variables can be forwarded via `config.toml` `[env]` `extra_vars`. Va
 Runs inside the container in this order:
 
 1. Run `/init-firewall.sh` as root to establish iptables port-based network filter and disable IPv6 — **first**, before any other step
-2. Drop to the `sandbox` user via `gosu`; steps 3–7 run as `sandbox`
-3. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
-4. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-5. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
-6. Based on `$AGENT` env var (set by launcher):
+2. Start `chronyd` as root for time synchronization; if it fails to start, log a warning and continue
+3. Drop to the `sandbox` user via `gosu`; steps 4–8 run as `sandbox`
+4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
+5. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
+6. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
+7. Based on `$AGENT` env var (set by launcher):
    - `opencode`: run `rtk init -g --opencode`
    - `claude`: run `rtk init -g`
-7. `exec` the agent binary with `/workspace` as working directory:
+8. `exec` the agent binary with `/workspace` as working directory:
    - `opencode`: `exec ~/.opencode/bin/opencode`
    - `claude`: `exec claude --dangerously-skip-permissions`
 
@@ -199,6 +200,7 @@ Uses `iptables` to establish a port-based network filter before any agent code r
 - Loopback (`lo` interface, both directions)
 - Established/related connections (conntrack)
 - DNS (UDP/TCP port 53) — restricted to the container's configured resolver IP only (read from `/etc/resolv.conf` at startup). DNS to any other destination is explicitly rejected. This mitigates DNS tunneling to attacker-controlled nameservers.
+- NTP (UDP port 123) — restricted to Cloudflare NTP IPs (162.159.200.1, 162.159.200.123) only. NTP to any other destination is explicitly rejected. This mitigates NTP amplification and exfiltration via NTP.
 - HTTP outbound (TCP port 80) — to any destination
 - HTTPS outbound (TCP port 443) — to any destination
 - SSH outbound (TCP port 22) — conditional. When `--no-ssh` is passed, the launcher sets `AGENT_SANDBOX_NO_SSH=1`; `init-firewall.sh` reads this and blocks TCP 22.
@@ -206,7 +208,7 @@ Uses `iptables` to establish a port-based network filter before any agent code r
 **Blocked traffic:**
 - All IPv6 (disabled via sysctl + ip6tables DROP policies)
 - All non-HTTP/HTTPS/SSH outbound TCP ports
-- All UDP except DNS to the pinned resolver
+- All UDP except DNS to the pinned resolver and NTP to pinned Cloudflare IPs
 - All ICMP and other protocols not matching the above
 - All unsolicited inbound traffic
 
@@ -461,7 +463,8 @@ Configured on the repository (not via workflow):
 | Decision | Choice | Rationale |
 |---|---|---|
 | gosu privilege drop | Root → sandbox via `gosu`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox |
-| Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW |
+| Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW + SETUID + SETGID + SYS_TIME |
+| NTP pinning | UDP 123 restricted to Cloudflare IPs (162.159.200.1, 162.159.200.123) | Mitigates NTP amplification and exfiltration; no DNS dependency at chrony startup |
 | Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with gosu (syscall-based) |
 | IPv6 | Disabled via `--sysctl` at container creation + defense-in-depth sysctl in init-firewall.sh; hard-verified via `/proc` | Eliminates iptables bypass via IPv6 |
 | Firewall ordering | Firewall runs first in entrypoint | No unprotected network window before agent starts |
@@ -496,14 +499,15 @@ The container boundary is the primary trust line. The network filter is defense-
 - **SSH agent socket.** The forwarded `SSH_AUTH_SOCK` allows the container to use all keys loaded in the host's SSH agent to authenticate to any SSH server. Port 22 is open outbound. This is required for git-over-SSH but means a misbehaving agent can authenticate as the user to arbitrary SSH hosts. Use `--no-ssh` if git-over-SSH is not needed.
 - **Workspace write access.** The agent has full read-write access to the mounted workspace. It can modify `.git/hooks`, `.github/workflows`, `Makefile`, or other files that may execute on the host after the session. Review agent changes before running host-side automation.
 - **DNS.** DNS queries are pinned to the container's configured resolver (from `/etc/resolv.conf`). This mitigates tunneling to attacker-controlled nameservers but does not prevent all DNS-based exfiltration techniques (e.g., encoding data in queries to domains that resolve through the pinned resolver's upstream chain).
+- **SYS_TIME capability.** `--cap-add=SYS_TIME` is granted to the container for chronyd to adjust the system clock. After `gosu` drops to the `sandbox` user, `SYS_TIME` remains available to all processes in the container, including the agent. A misbehaving agent could manipulate the system clock to defeat time-sensitive security checks (TLS certificate validity, JWT/TOTP expiry, AWS SigV4 windows). This is an accepted trade-off: clock manipulation is a lower-severity capability than the unrestricted HTTPS egress already permitted, and the alternative (no time synchronization) causes real operational failures after host sleep/resume.
 
 **Mitigations in place:**
 
-- Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` only, for iptables)
+- Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` + `SETUID` + `SETGID` + `SYS_TIME` only; `NET_ADMIN`/`NET_RAW` for iptables, `SETUID`/`SETGID` for gosu privilege drop, `SYS_TIME` for chronyd clock adjustment)
 - `no-new-privileges` prevents execve-based privilege escalation
 - IPv6 disabled via `--sysctl` at container creation + defense-in-depth sysctl in entrypoint; hard-verified via `/proc`
 - Firewall established before any agent code runs
-- Non-web protocols blocked (only TCP 80/443/22 and pinned DNS permitted)
+- Non-web protocols blocked (only TCP 80/443/22, pinned DNS, and pinned NTP permitted)
 - API keys restricted to an explicit allowlist (not a glob pattern)
 - Symlink auto-mounting is opt-in and denies dotfile directories by default
 - Resource limits prevent host starvation

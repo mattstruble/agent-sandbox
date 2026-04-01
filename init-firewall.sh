@@ -6,7 +6,7 @@ export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 # Runs as root as the first step in entrypoint.sh, before any agent code.
 #
 # Security model:
-#   ALLOW  — loopback, established/related, DNS (pinned), TCP 80/443, SSH (conditional)
+#   ALLOW  — loopback, established/related, DNS (pinned), NTP (pinned Cloudflare), TCP 80/443, SSH (conditional)
 #   BLOCK  — all IPv6, all other outbound protocols/ports, all unsolicited inbound
 
 # Regex for valid IPv4 host address (no prefix)
@@ -102,6 +102,11 @@ iptables -A OUTPUT -p udp --dport 53 -d "$DNS_IP" -j ACCEPT
 iptables -A OUTPUT -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
 iptables -A OUTPUT -p tcp --dport 53 -d "$DNS_IP" -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -j REJECT --reject-with icmp-port-unreachable
+
+# NTP: pinned to Cloudflare IPs only (mitigates NTP amplification / exfil)
+iptables -A OUTPUT -p udp --dport 123 -d 162.159.200.1 -j ACCEPT
+iptables -A OUTPUT -p udp --dport 123 -d 162.159.200.123 -j ACCEPT
+iptables -A OUTPUT -p udp --dport 123 -j REJECT --reject-with icmp-port-unreachable
 
 # HTTP/HTTPS: allow all outbound web traffic
 iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT

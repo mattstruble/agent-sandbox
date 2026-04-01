@@ -18,9 +18,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
     jq \
     ca-certificates \
+    chrony \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
+
+# ─── chrony configuration ─────────────────────────────────────────────────────
+# Client-only config using Cloudflare NTP IPs directly (no DNS dependency).
+# makestep 1 3 allows clock stepping for large corrections after host sleep/wake.
+# port 0 / cmdport 0 disable all listening sockets — daemon is outbound-only.
+
+RUN mkdir -p /etc/chrony && cat > /etc/chrony/chrony.conf <<'EOF'
+server 162.159.200.1 iburst
+server 162.159.200.123 iburst
+makestep 1 3
+port 0
+cmdport 0
+driftfile /var/lib/chrony/drift
+EOF
 
 # ─── gh CLI v2.89.0 ───────────────────────────────────────────────────────────
 # Version-pinned; downloaded over TLS. No SHA256 checksum — enables automated
