@@ -80,6 +80,16 @@
             dontConfigure = true;
             dontBuild = true;
 
+            # Restore original shebangs for container-only scripts.
+            # Nix's patchShebangs rewrites #!/usr/bin/env bash to a /nix/store
+            # path, but these scripts run inside the container where no Nix
+            # store exists.
+            postFixup = ''
+              sed -i '1s|^#!.*/bash$|#!/usr/bin/env bash|' \
+                $out/share/agent-sandbox/entrypoint.sh \
+                $out/share/agent-sandbox/init-firewall.sh
+            '';
+
             installPhase = ''
               runHook preInstall
 
