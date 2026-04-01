@@ -41,7 +41,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ### Network Sandboxing
 
 - All outbound network traffic is filtered before the agent starts; there is no window where the agent runs without restrictions.
-- Only TCP ports 80 (HTTP), 443 (HTTPS), and optionally 22 (SSH) are permitted outbound. All other protocols and ports are blocked.
+- Only TCP ports 80 (HTTP), 443 (HTTPS), and optionally 22 (SSH) are permitted outbound. UDP port 123 (NTP) is permitted to pinned Cloudflare server IPs only. All other protocols and ports are blocked.
 - DNS is pinned to the container's configured resolver only. Queries to other DNS servers are rejected.
 - Connections on non-allowed ports are rejected immediately (ICMP admin-prohibited), not silently dropped.
 
