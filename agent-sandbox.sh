@@ -686,6 +686,8 @@ fi
 # exec (which replaces the process). The staged dir persists for the container's
 # lifetime — this is fine since the mount is read-only and permissions are tight.
 _stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
+# Resolve /tmp -> /private/tmp on macOS so Podman virtiofs bind-mounts work.
+_stage_dir=$(portable_realpath "$_stage_dir")
 chmod 700 "$_stage_dir"
 trap 'rm -rf "$_stage_dir"' EXIT
 
