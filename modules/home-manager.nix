@@ -19,6 +19,7 @@ let
       extra_vars = cfg.settings.env.extraVars;
     };
     workspace = {
+      follow_symlinks = cfg.settings.workspace.followSymlinks;
       follow_all_symlinks = cfg.settings.workspace.followAllSymlinks;
     };
     mounts = {
@@ -34,6 +35,7 @@ let
   allDefaults =
     cfg.settings.defaultAgent == "opencode"
     && cfg.settings.env.extraVars == [ ]
+    && cfg.settings.workspace.followSymlinks == false
     && cfg.settings.workspace.followAllSymlinks == false
     && cfg.settings.mounts.extraPaths == [ ]
     && cfg.settings.resources.memory == "8g"
@@ -68,10 +70,16 @@ in
         description = "Additional environment variables to forward into the sandbox.";
       };
 
+      workspace.followSymlinks = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "When true, mount depth-1 symlink targets from the workspace (skips dotfile directories).";
+      };
+
       workspace.followAllSymlinks = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "When true, --follow-symlinks includes dotfile directories.";
+        description = "When true, mount depth-1 symlink targets including dotfile directories (implies followSymlinks).";
       };
 
       mounts.extraPaths = lib.mkOption {

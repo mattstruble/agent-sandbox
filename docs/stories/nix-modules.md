@@ -43,13 +43,14 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
 - [ ] Exposes typed options under `programs.agent-sandbox.settings`:
   - `defaultAgent` — `enum [ "opencode" "claude" ]`, default `"opencode"`.
   - `env.extraVars` — `listOf str`, default `[]`.
+  - `workspace.followSymlinks` — `bool`, default `false`.
   - `workspace.followAllSymlinks` — `bool`, default `false`.
   - `mounts.extraPaths` — `listOf str`, default `[]`.
   - `resources.memory` — `str`, default `"8g"`.
   - `resources.cpus` — `ints.positive`, default `4`.
 - [ ] When any setting differs from defaults, generates `~/.config/agent-sandbox/config.toml` via `xdg.configFile` using `pkgs.formats.toml`.
 - [ ] When all settings are at defaults, no config file is generated.
-- [ ] Generated TOML uses snake_case keys matching what the launcher expects (`extra_vars`, `follow_all_symlinks`, `extra_paths`).
+- [ ] Generated TOML uses snake_case keys matching what the launcher expects (`extra_vars`, `follow_symlinks`, `follow_all_symlinks`, `extra_paths`).
 - [ ] Module lives at `modules/home-manager.nix`.
 
 ### Updates to existing files

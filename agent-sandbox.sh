@@ -303,6 +303,7 @@ CONFIG_FILE="${HOME}/.config/agent-sandbox/config.toml"
 # Config values with defaults
 CFG_AGENT="opencode"
 CFG_EXTRA_VARS=()
+CFG_FOLLOW_SYMLINKS=false
 CFG_FOLLOW_ALL_SYMLINKS=false
 CFG_EXTRA_PATHS=()
 CFG_MEMORY="8g"
@@ -374,6 +375,12 @@ else:
 		CFG_EXTRA_VARS+=("$varname")
 	done < <(_cfg_get "env.extra_vars")
 
+	# [workspace] follow_symlinks (boolean)
+	val=$(_cfg_get "workspace.follow_symlinks")
+	if [[ "$val" == "true" ]]; then
+		CFG_FOLLOW_SYMLINKS=true
+	fi
+
 	# [workspace] follow_all_symlinks (boolean)
 	val=$(_cfg_get "workspace.follow_all_symlinks")
 	if [[ "$val" == "true" ]]; then
@@ -412,6 +419,11 @@ fi
 # Validate agent value
 if [[ "$OPT_AGENT" != "opencode" && "$OPT_AGENT" != "claude" ]]; then
 	die "--agent must be 'opencode' or 'claude', got '$OPT_AGENT'"
+fi
+
+# Apply config follow_symlinks
+if $CFG_FOLLOW_SYMLINKS; then
+	OPT_FOLLOW_SYMLINKS=true
 fi
 
 # Apply config follow_all_symlinks

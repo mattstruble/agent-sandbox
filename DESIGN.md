@@ -230,6 +230,7 @@ agent = "opencode"              # default agent when --agent is not passed
 extra_vars = []                 # additional env vars to forward (e.g. ["DEEPSEEK_API_KEY"])
 
 [workspace]
+follow_symlinks = false         # when true, mount depth-1 symlink targets (skips dotfile dirs)
 follow_all_symlinks = false     # when true, --follow-symlinks includes dotfile directories
 
 [mounts]
@@ -314,6 +315,7 @@ Adds `package` and `containerPackage` (when non-null) to `home.packages`. Additi
 |---|---|---|---|
 | `settings.defaultAgent` | `enum [ "opencode" "claude" ]` | `"opencode"` | `defaults.agent` |
 | `settings.env.extraVars` | `listOf str` | `[]` | `env.extra_vars` |
+| `settings.workspace.followSymlinks` | `bool` | `false` | `workspace.follow_symlinks` |
 | `settings.workspace.followAllSymlinks` | `bool` | `false` | `workspace.follow_all_symlinks` |
 | `settings.mounts.extraPaths` | `listOf str` | `[]` | `mounts.extra_paths` |
 | `settings.resources.memory` | `str` | `"8g"` | `resources.memory` |
