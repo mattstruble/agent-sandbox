@@ -685,19 +685,7 @@ fi
 # NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
 # exec (which replaces the process). The staged dir persists for the container's
 # lifetime — this is fine since the mount is read-only and permissions are tight.
-#
-# On macOS + Podman, the Podman VM shares the host filesystem via virtiofs but
-# only certain paths are mounted (typically $HOME). System temp dirs like /tmp
-# (→ /private/tmp) or $TMPDIR (/var/folders/…) may not be shared, causing
-# "statfs: no such file or directory" when Podman tries to bind-mount from them.
-# Place the staging dir under $HOME so it is always accessible to the VM.
-if [[ "$(uname -s)" == "Darwin" && "$RUNTIME" == "podman" ]]; then
-	_stage_base="${HOME}/.cache/agent-sandbox"
-	mkdir -p "$_stage_base"
-	_stage_dir=$(mktemp -d "$_stage_base/config.XXXXXX")
-else
-	_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
-fi
+_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
 chmod 700 "$_stage_dir"
 trap 'rm -rf "$_stage_dir"' EXIT
 
