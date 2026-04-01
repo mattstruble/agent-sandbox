@@ -15,10 +15,10 @@ cutting LLM token costs by 60--90%.
 
 ```bash
 # With Nix (no install required):
-nix run github:mstruble/agent-sandbox
+nix run github:mattstruble/agent-sandbox
 
 # Or install with the shell installer:
-curl -fsSL https://raw.githubusercontent.com/mstruble/agent-sandbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mattstruble/agent-sandbox/main/install.sh | sh
 ```
 
 Then, from any project directory:
@@ -33,18 +33,18 @@ agent-sandbox --agent claude   # run claude code instead
 ### Nix (recommended)
 
 ```bash
-# One-shot:
-nix run github:mstruble/agent-sandbox
+# With Nix (no install required):
+nix run github:mattstruble/agent-sandbox
 
 # Permanent install:
-nix profile install github:mstruble/agent-sandbox
+nix profile install github:mattstruble/agent-sandbox
 ```
 
 Nix modules are provided for NixOS, nix-darwin, and Home Manager:
 
 ```nix
 # flake.nix inputs
-inputs.agent-sandbox.url = "github:mstruble/agent-sandbox";
+inputs.agent-sandbox.url = "github:mattstruble/agent-sandbox";
 
 # Home Manager example
 programs.agent-sandbox = {
@@ -57,7 +57,7 @@ programs.agent-sandbox = {
 ### Shell installer
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mstruble/agent-sandbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mattstruble/agent-sandbox/main/install.sh | sh
 ```
 
 Installs to `~/.local/bin/agent-sandbox`. Uninstall with
@@ -66,7 +66,7 @@ Installs to `~/.local/bin/agent-sandbox`. Uninstall with
 ### Container image
 
 ```bash
-docker pull ghcr.io/mstruble/agent-sandbox:latest
+docker pull ghcr.io/mattstruble/agent-sandbox:latest
 ```
 
 ## Usage
