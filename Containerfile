@@ -82,24 +82,23 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox
 COPY --chown=root:root --chmod=0755 init-firewall.sh /init-firewall.sh
 COPY --chown=root:root --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# ─── opencode ─────────────────────────────────────────────────────────────────
-# Installed via the official install script into /home/sandbox/.opencode/bin/.
-# The install script is fetched from opencode.ai — the official distribution
-# channel for opencode. No pinned-binary release artifact is published by the
-# opencode project; the install script is the only supported install method.
-# ACCEPTED RISK: The install script is trusted based on TLS to opencode.ai.
-# If a pinned release binary becomes available, migrate to a curl + version-pin
-# + SHA256 checksum verification + install pattern.
-# opencode db migrate runs immediately after install to pre-initialize the
-# database and avoid a hang on first container start (known issue).
-# Both steps are wrapped with timeout to prevent hung build layers.
+# ─── opencode v1.3.11 ─────────────────────────────────────────────────────────
+# Version-pinned; downloaded over TLS from GitHub releases. Architecture is
+# detected at build time via dpkg --print-architecture.
+# Database migrations run automatically on first container start.
 
-# opencode install script writes to $HOME; must run as sandbox user.
 ENV HOME=/home/sandbox
 USER sandbox
 
-RUN timeout 120 bash -c "curl -fsSL https://opencode.ai/install | bash" \
-    && timeout 60 /home/sandbox/.opencode/bin/opencode db migrate
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in amd64) OC_ARCH="x64" ;; arm64) OC_ARCH="arm64" ;; *) echo "Unsupported arch: $ARCH" && exit 1 ;; esac \
+    && mkdir -p /home/sandbox/.opencode/bin \
+    && curl -fsSL \
+       "https://github.com/anomalyco/opencode/releases/download/v1.3.11/opencode-linux-${OC_ARCH}.tar.gz" \
+       -o /tmp/opencode.tar.gz \
+    && tar -xzf /tmp/opencode.tar.gz -C /home/sandbox/.opencode/bin \
+    && chmod 755 /home/sandbox/.opencode/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz
 
 # ─── claude-code v2.1.87 ──────────────────────────────────────────────────────
 # Installed globally via npm. Version pinned to latest stable as of 2026-03-31.

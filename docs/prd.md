@@ -140,7 +140,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ### Dependency Management
 
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, claude-code) are grouped into a single PR.
+- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code) are grouped into a single PR.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
 - Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.

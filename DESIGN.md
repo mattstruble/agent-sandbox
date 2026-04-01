@@ -111,13 +111,11 @@ Examples:
 | nodejs, npm | apt |
 | `gh` CLI | curl from GitHub releases (version-pinned) |
 | `uv` | copied from `ghcr.io/astral-sh/uv` (pinned digest) |
-| `opencode` | official install script |
+| `opencode` | curl from GitHub releases (version-pinned) → `~/.opencode/bin/opencode` |
 | `claude-code` | `npm install -g @anthropic-ai/claude-code@X.Y.Z` |
 | `rtk` | curl from GitHub releases (version-pinned) → `/usr/local/bin/rtk` |
 
-**Binary pinning:** All binaries installed from external sources are pinned to specific release versions. Downloads are over TLS. SHA256 checksum verification has been removed in favor of version pinning to enable automated dependency updates via Renovate. The `opencode` install script is trusted based on TLS to opencode.ai (accepted risk — no pinned release binary is published). The `claude-code` npm package is pinned to a specific version.
-
-`opencode db migrate` is run at image build time to avoid a hang on first container start (a known issue discovered in ws1/sandbox).
+**Binary pinning:** All binaries installed from external sources are pinned to specific release versions. Downloads are over TLS. SHA256 checksum verification has been removed in favor of version pinning to enable automated dependency updates via Renovate. The `claude-code` npm package is pinned to a specific version.
 
 A `sandbox` user is created at UID 1000. The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `gosu` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
 
