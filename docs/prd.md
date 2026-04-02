@@ -9,6 +9,8 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ## User Stories
 
 - As a developer, I want to run an AI coding agent against a project without exposing my host network or filesystem, so that I can work without risk of unintended data exfiltration.
+- As a developer, I want the sandbox to block the agent from uploading or posting data to arbitrary internet endpoints, while still allowing it to fetch and read, so that data exfiltration via HTTP is prevented without breaking read access.
+- As a developer behind a corporate proxy, I want to provide my corporate CA certificates so the sandbox proxy works alongside my organization's TLS inspection.
 - As a developer, I want token consumption reduced automatically on every agent session, so that I don't pay for verbose tool output.
 - As a developer, I want to start a sandbox from any directory with a single command, so that the workflow is as fast as running the agent directly.
 - As a developer, I want to run multiple sandboxed agent sessions in parallel on different projects, so that I can parallelize work without sessions interfering with each other.
@@ -44,6 +46,24 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Only TCP ports 80 (HTTP), 443 (HTTPS), and optionally 22 (SSH) are permitted outbound. UDP port 123 (NTP) is permitted to pinned Cloudflare server IPs only. All other protocols and ports are blocked.
 - DNS is pinned to the container's configured resolver only. Queries to other DNS servers are rejected.
 - Connections on non-allowed ports are rejected immediately (ICMP admin-prohibited), not silently dropped.
+
+### HTTP Method Filtering (Proxy)
+
+- An internal MITM proxy runs inside the container, intercepting all HTTP and HTTPS traffic.
+- The proxy blocks outbound requests using write methods (POST, PUT, PATCH, DELETE) to non-whitelisted domains, returning a 403 with a descriptive error message explaining what was blocked and how to add the domain to the allowlist.
+- The proxy allows read methods (GET, HEAD, OPTIONS) to any domain without restriction.
+- WebSocket upgrade requests to non-whitelisted domains are blocked; WebSocket connections to whitelisted domains are allowed.
+- Whitelisting operates at domain/origin level (e.g., `https://api.anthropic.com`), not per-path.
+- LLM provider domains are auto-whitelisted based on which API keys are present in the environment: `ANTHROPIC_API_KEY` → `api.anthropic.com`, `OPENAI_API_KEY` → `api.openai.com`, `OPENROUTER_API_KEY` → `openrouter.ai`, `MISTRAL_API_KEY` → `api.mistral.com`, AWS keys → `bedrock-runtime.*.amazonaws.com`. The `models.dev` domain is always whitelisted.
+- Remote MCP server URLs are auto-whitelisted by parsing agent config files (`~/.claude/settings.json` for Claude Code, `~/.config/opencode/opencode.json` for OpenCode) at container startup.
+- The user may add additional domains to the whitelist via `[proxy].allowed_post_urls` in `config.toml`. These are additive to auto-detected domains.
+- The proxy is enabled by default; it can be disabled via `[proxy].enabled = false` in `config.toml`.
+- Traffic is routed through the proxy via `HTTP_PROXY` and `HTTPS_PROXY` environment variables set in the entrypoint.
+- Direct outbound traffic to ports 80 and 443 is dropped by iptables, forcing all HTTP/HTTPS through the proxy. The agent cannot bypass the proxy by unsetting environment variables.
+- The proxy generates a fresh CA keypair at each container startup. The CA certificate is installed into the system trust store and `NODE_EXTRA_CA_CERTS` before the agent starts.
+- Corporate or additional CA certificates can be provided via `[proxy].extra_ca_certs` in `config.toml`. These are mounted into the container and merged into the system trust store alongside the proxy's CA.
+- The proxy is built as a static Go binary using goproxy (`github.com/elazarl/goproxy`), compiled via a multi-stage build in the Containerfile.
+- Blocked requests are logged to stderr with method, domain, and timestamp.
 
 ### Time Synchronization
 
@@ -148,7 +168,6 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ## Open Questions
 
 - Should config changes inside the sandbox optionally be persisted back to the host (e.g. via a `--persist-config` flag)? Currently all in-session config changes are ephemeral.
-- Should there be a mode that disables network sandboxing entirely for cases where the user needs unrestricted access?
 - Should `rtk` gain stats (`rtk gain`) be persisted across sessions, or is per-session ephemerality acceptable?
 
 ## Out of Scope

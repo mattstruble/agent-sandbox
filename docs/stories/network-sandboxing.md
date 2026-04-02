@@ -36,3 +36,4 @@ Implements the iptables-based port filter via `init-firewall.sh`, which runs as 
 ## Out of Scope
 - Destination-IP-based allowlisting (removed in favor of port-based filtering to support unrestricted web access).
 - Per-session allowlist overrides via CLI flag.
+- HTTP method-level filtering (see proxy-binary, proxy-integration, and proxy-configuration stories).
