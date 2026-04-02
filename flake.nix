@@ -143,6 +143,21 @@
             type = "app";
             program = "${self'.packages.default}/bin/agent-sandbox";
           };
+
+          devShells.default = pkgs.mkShell {
+            packages = [
+              pkgs.bats
+              pkgs.bats.libraries.bats-support
+              pkgs.bats.libraries.bats-assert
+              pkgs.shellcheck
+              pkgs.nixfmt
+              pkgs.gnumake
+            ];
+
+            shellHook = ''
+              export BATS_LIB_PATH="${pkgs.bats.libraries.bats-support}/share/bats:${pkgs.bats.libraries.bats-assert}/share/bats"
+            '';
+          };
         };
     };
 }
