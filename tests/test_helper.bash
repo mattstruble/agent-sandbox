@@ -55,6 +55,33 @@ runtime_name() {
 #
 # Portable: uses sha256sum on Linux, shasum -a 256 on macOS.
 
+# ---------------------------------------------------------------------------
+# Helper: make_temp / make_tempdir
+# ---------------------------------------------------------------------------
+# Wrappers around mktemp that resolve the resulting path to its canonical form.
+# On macOS, /tmp is a symlink to /private/tmp, and inside nix develop, mktemp
+# creates files under /tmp/nix-shell.XXXXX/. Docker Desktop's filesystem
+# sharing uses the canonical path, so passing the unresolved symlink path to
+# `docker run -v` fails with "statfs: no such file or directory".
+#
+# These helpers resolve the path via realpath so it's safe for container -v flags.
+
+make_temp() {
+	local f
+	f="$(mktemp)" || return 1
+	realpath "$f"
+}
+
+make_tempdir() {
+	local d
+	d="$(mktemp -d)" || return 1
+	realpath "$d"
+}
+
+# ---------------------------------------------------------------------------
+# Helper: compute_image_tag
+# ---------------------------------------------------------------------------
+
 compute_image_tag() {
 	local containerfile="${REPO_ROOT}/Containerfile"
 	local hash

@@ -38,10 +38,13 @@ setup() {
 teardown() {
     # Clean up any temp files/dirs created during the test.
     # bats calls teardown even when assertions fail, so cleanup is guaranteed.
-    [[ -n "$_TEST_WORKSPACE" ]] && rm -rf "$_TEST_WORKSPACE"
-    [[ -n "$_TEST_AGENT" ]] && rm -f "$_TEST_AGENT"
-    [[ -n "$_TEST_GITCONFIG" ]] && rm -f "$_TEST_GITCONFIG"
-    [[ -n "$_TEST_HOST_CONFIG_DIR" ]] && rm -rf "$_TEST_HOST_CONFIG_DIR"
+    # IMPORTANT: Use `|| true` to prevent short-circuit exit code 1 when the
+    # variable is empty. Bats runs teardown under `set -e`, so a bare
+    # `[[ -n "" ]] && cmd` returns 1 and fails the teardown (and the test).
+    [[ -n "$_TEST_WORKSPACE" ]] && rm -rf "$_TEST_WORKSPACE" || true
+    [[ -n "$_TEST_AGENT" ]] && rm -f "$_TEST_AGENT" || true
+    [[ -n "$_TEST_GITCONFIG" ]] && rm -f "$_TEST_GITCONFIG" || true
+    [[ -n "$_TEST_HOST_CONFIG_DIR" ]] && rm -rf "$_TEST_HOST_CONFIG_DIR" || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,8 +287,8 @@ teardown() {
     # Mount the fake agent over the real opencode binary.
     # The entrypoint starts as root, sets up the firewall, then re-execs as sandbox.
     # We verify the user drop by having the fake agent print its effective username.
-    _TEST_WORKSPACE=$(mktemp -d)
-    _TEST_AGENT=$(mktemp)
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
     # Use printf '%s\n' to write each line; prevents host-side expansion of $() and ${}.
     printf '%s\n' \
         '#!/usr/bin/env bash' \
@@ -355,8 +358,8 @@ teardown() {
     # The entrypoint (Phase 2) creates ~/.config/opencode/opencode.json with
     # permission overrides. We run the full entrypoint and have the fake agent
     # print the config file contents to verify the overrides were applied.
-    _TEST_WORKSPACE=$(mktemp -d)
-    _TEST_AGENT=$(mktemp)
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
     printf '%s\n' \
         '#!/usr/bin/env bash' \
         'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \
@@ -387,8 +390,8 @@ teardown() {
 @test "entrypoint: claude agent path executes claude binary" {
     # For the claude agent, the entrypoint runs `exec claude --dangerously-skip-permissions`.
     # We verify the entrypoint reaches that point by mounting a fake claude over the real one.
-    _TEST_WORKSPACE=$(mktemp -d)
-    _TEST_AGENT=$(mktemp)
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
     printf '%s\n' \
         '#!/usr/bin/env bash' \
         'echo "FAKE_CLAUDE_MARKER: agent-sandbox-test-sentinel"' \
@@ -428,7 +431,7 @@ teardown() {
 
 # bats test_tags=integration
 @test "config staging: git config mounted at expected path is readable" {
-    _TEST_GITCONFIG=$(mktemp)
+    _TEST_GITCONFIG=$(make_temp)
     printf '[user]\n  name = Test User\n  email = test@example.com\n' > "$_TEST_GITCONFIG"
 
     run "$RUNTIME" run --rm \
@@ -443,7 +446,7 @@ teardown() {
 
 # bats test_tags=integration
 @test "config staging: git config is read-only (not writable by sandbox user)" {
-    _TEST_GITCONFIG=$(mktemp)
+    _TEST_GITCONFIG=$(make_temp)
     printf '[user]\n  name = Test User\n' > "$_TEST_GITCONFIG"
 
     # Attempt to append to the read-only mounted file as the sandbox user.
@@ -460,8 +463,8 @@ teardown() {
 
 # bats test_tags=integration
 @test "config staging: environment variable passed via -e is visible to agent" {
-    _TEST_WORKSPACE=$(mktemp -d)
-    _TEST_AGENT=$(mktemp)
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
     # Use printf '%s\n' to write each line; prevents host-side expansion of ${...}.
     printf '%s\n' \
         '#!/usr/bin/env bash' \
@@ -493,11 +496,11 @@ teardown() {
     # Mount a fake opencode config at /host-config/opencode.
     # The entrypoint copies it to ~/.config/opencode, then jq-merges permission overrides.
     # The fake agent reads the resulting config to verify both staging and merging worked.
-    _TEST_HOST_CONFIG_DIR=$(mktemp -d)
+    _TEST_HOST_CONFIG_DIR=$(make_tempdir)
     printf '{"model": "test-model"}\n' > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
 
-    _TEST_WORKSPACE=$(mktemp -d)
-    _TEST_AGENT=$(mktemp)
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
     printf '%s\n' \
         '#!/usr/bin/env bash' \
         'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \

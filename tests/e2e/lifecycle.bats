@@ -36,11 +36,11 @@ setup() {
 	fi
 
 	# Create an isolated temporary workspace for this test
-	WORKSPACE_DIR="$(mktemp -d)" || skip "mktemp failed: /tmp may be full"
+	WORKSPACE_DIR="$(make_tempdir)" || skip "mktemp failed: /tmp may be full"
 
 	# Create an isolated HOME with minimal git config so the launcher's
 	# gitconfig mount logic doesn't pick up the real user's config
-	TEST_HOME="$(mktemp -d)" || skip "mktemp failed: /tmp may be full"
+	TEST_HOME="$(make_tempdir)" || skip "mktemp failed: /tmp may be full"
 	mkdir -p "${TEST_HOME}/.config/agent-sandbox"
 	cat >"${TEST_HOME}/.gitconfig" <<'GITCFG'
 [user]
@@ -92,8 +92,8 @@ teardown() {
 	for d in "${TEST_TMPDIRS[@]+"${TEST_TMPDIRS[@]}"}"; do rm -rf "$d" 2>/dev/null || true; done
 
 	# Remove the shared workspace and HOME directories
-	[[ -d "${WORKSPACE_DIR:-}" ]] && rm -rf "$WORKSPACE_DIR"
-	[[ -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+	[[ -d "${WORKSPACE_DIR:-}" ]] && rm -rf "$WORKSPACE_DIR" || true
+	[[ -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME" || true
 }
 
 # ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ _run_sandbox() {
 
 	# Use a custom fake agent that verifies the file exists at /workspace/
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
@@ -263,7 +263,7 @@ AGENT
 @test "workspace mount: file written inside container appears on host filesystem" {
 	# Use a custom fake agent that writes a file to /workspace/
 	local write_agent
-	write_agent="$(mktemp)"
+	write_agent="$(make_temp)"
 	TEST_TMPFILES+=("$write_agent")
 	chmod 700 "$write_agent"
 	cat >"$write_agent" <<'AGENT'
@@ -334,7 +334,7 @@ AGENT
 	# macOS, so the bind-mount uses the canonical path. The verify_agent script
 	# must use the same canonical path to find the file.
 	local external_dir
-	external_dir="$(mktemp -d)"
+	external_dir="$(make_tempdir)"
 	external_dir="$(portable_realpath "$external_dir")"
 	TEST_TMPDIRS+=("$external_dir")
 	echo "external-content" >"${external_dir}/external-file.txt"
@@ -345,7 +345,7 @@ AGENT
 	# Use a custom fake agent that verifies the external directory is accessible.
 	# Unquoted heredoc: interpolates ${external_dir} from mktemp (no user input).
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<AGENT
@@ -385,7 +385,7 @@ AGENT
 	# Use mktemp's random suffix to avoid PID-predictable names; rename to a
 	# dotfile name while preserving the random suffix for uniqueness.
 	local dotdir
-	dotdir="$(mktemp -d)"
+	dotdir="$(make_tempdir)"
 	local dotdir_parent
 	dotdir_parent="$(dirname "$dotdir")"
 	local dotdir_name=".test-dotdir-$(basename "$dotdir")"
@@ -404,7 +404,7 @@ AGENT
 	# Use a custom fake agent that checks whether the dotdir is accessible.
 	# Unquoted heredoc: interpolates ${dotdir} from mktemp (no user input).
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<AGENT
@@ -442,7 +442,7 @@ AGENT
 @test "symlink mount: --follow-all-symlinks includes dotfile symlink targets" {
 	# Create an external dotfile directory (same pattern as test 6)
 	local dotdir
-	dotdir="$(mktemp -d)"
+	dotdir="$(make_tempdir)"
 	local dotdir_parent
 	dotdir_parent="$(dirname "$dotdir")"
 	local dotdir_name=".test-dotdir-all-$(basename "$dotdir")"
@@ -461,7 +461,7 @@ AGENT
 	# Use a custom fake agent that verifies the dotdir IS accessible.
 	# Unquoted heredoc: interpolates ${dotdir} from mktemp (no user input).
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<AGENT
@@ -500,7 +500,7 @@ AGENT
 	# Resolve to canonical path: collect_extra_mounts calls portable_realpath,
 	# so the bind-mount uses the canonical path inside the container.
 	local extra_dir
-	extra_dir="$(mktemp -d)"
+	extra_dir="$(make_tempdir)"
 	extra_dir="$(portable_realpath "$extra_dir")"
 	TEST_TMPDIRS+=("$extra_dir")
 	echo "extra-mount-content" >"${extra_dir}/extra-file.txt"
@@ -508,7 +508,7 @@ AGENT
 	# Use a custom fake agent that verifies the extra mount is accessible.
 	# Unquoted heredoc: interpolates ${extra_dir} from mktemp (no user input).
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<AGENT
@@ -545,7 +545,7 @@ AGENT
 @test "env passthrough: AGENT env var is set to 'opencode' inside the container" {
 	# Use a custom fake agent that prints the AGENT env var
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
@@ -574,7 +574,7 @@ AGENT
 @test "env passthrough: AGENT env var is set to 'claude' when --agent claude is passed" {
 	# Use a custom fake agent that prints the AGENT env var
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
@@ -644,7 +644,7 @@ AGENT
 # bats test_tags=e2e
 @test "no-ssh flag: AGENT_SANDBOX_NO_SSH env var is set inside container when --no-ssh is passed" {
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
@@ -672,7 +672,7 @@ AGENT
 # bats test_tags=e2e
 @test "gitconfig mount: host .gitconfig is mounted read-only at /home/sandbox/.gitconfig" {
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
@@ -726,7 +726,7 @@ AGENT
 # bats test_tags=e2e
 @test "workspace mount: /workspace is the working directory when the agent runs" {
 	local verify_agent
-	verify_agent="$(mktemp)"
+	verify_agent="$(make_temp)"
 	TEST_TMPFILES+=("$verify_agent")
 	chmod 700 "$verify_agent"
 	cat >"$verify_agent" <<'AGENT'
