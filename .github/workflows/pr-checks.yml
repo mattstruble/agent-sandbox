@@ -39,9 +39,11 @@ jobs:
   build-scan:
     name: Build & Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Build container image
         run: docker build -f Containerfile -t agent-sandbox:ci-test .
@@ -60,6 +62,15 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: '1'
+
+      - name: Tag image with content hash
+        run: |
+          IMAGE_HASH=$(sha256sum Containerfile | cut -c1-64)
+          [[ -n "$IMAGE_HASH" ]] || { echo "ERROR: IMAGE_HASH is empty"; exit 1; }
+          docker tag agent-sandbox:ci-test "agent-sandbox:${IMAGE_HASH}"
+
+      - name: Run test suite
+        run: nix develop --command bash -c 'RUNTIME=docker make test'
 
   nix-build:
     name: Nix Build
