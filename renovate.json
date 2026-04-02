@@ -63,11 +63,22 @@
       ],
       "datasourceTemplate": "npm",
       "depNameTemplate": "@anthropic-ai/claude-code"
+    },
+    {
+      "description": "opencode version in download URL",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "github\\.com/anomalyco/opencode/releases/download/v(?<currentValue>[\\d.]+)/opencode-linux-"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "anomalyco/opencode",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ],
   "packageRules": [
     {
-      "description": "Group all Containerfile tool updates into a single PR (custom.regex covers gh, rtk, uv, claude-code; dockerfile covers base image)",
+      "description": "Group all Containerfile tool updates into a single PR (custom.regex covers gh, rtk, uv, opencode, claude-code; dockerfile covers base image)",
       "groupName": "container-deps",
       "matchManagers": ["dockerfile", "custom.regex"],
       "matchFileNames": ["Containerfile"],

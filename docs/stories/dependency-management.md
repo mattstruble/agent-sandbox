@@ -4,7 +4,7 @@
 PRD Capability Group: Dependency Management
 Behaviors covered:
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, claude-code) are grouped into a single PR.
+- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code) are grouped into a single PR.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
 - Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.
@@ -19,6 +19,7 @@ A `renovate.json` at the repository root configures automated dependency update 
 - [ ] Renovate is configured with regex managers for each Containerfile dependency:
   - `gh` CLI: matches the version in the curl URL and tarball path (e.g., `v2.89.0`).
   - `rtk`: matches the version in the curl URL and tarball path (e.g., `v0.34.2`).
+  - `opencode`: matches the version in the GitHub releases download URL (e.g., `v1.3.11`).
   - `uv`: matches the image tag and digest in the `COPY --from` directive (e.g., `0.11.2@sha256:...`).
   - `claude-code`: matches the npm version in the `npm install` command (e.g., `2.1.87`).
 - [ ] The Dockerfile manager handles `debian:bookworm-slim` base image updates.
@@ -26,7 +27,7 @@ A `renovate.json` at the repository root configures automated dependency update 
 - [ ] The github-actions manager handles action version updates in workflow files.
 
 ### Grouping
-- [ ] Container dependencies (base image, gh, rtk, uv, claude-code) are grouped into a single PR.
+- [ ] Container dependencies (base image, gh, rtk, uv, opencode, claude-code) are grouped into a single PR.
 - [ ] Nix flake inputs are grouped into a single PR.
 - [ ] GitHub Actions versions are grouped into a single PR.
 

@@ -40,10 +40,17 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ### Network Sandboxing
 
-- All outbound network traffic is blocked before the agent starts; there is no window where the agent runs without restrictions.
-- The following destinations are allowlisted by default: Anthropic API, OpenAI API, OpenRouter, Mistral API, AWS Bedrock (all regions), GitHub, npm registry, DNS, SSH.
-- Connections to non-allowlisted destinations are rejected immediately, not silently dropped.
-- The user can extend the allowlist with additional domains via `~/.config/agent-sandbox/config.toml`.
+- All outbound network traffic is filtered before the agent starts; there is no window where the agent runs without restrictions.
+- Only TCP ports 80 (HTTP), 443 (HTTPS), and optionally 22 (SSH) are permitted outbound. UDP port 123 (NTP) is permitted to pinned Cloudflare server IPs only. All other protocols and ports are blocked.
+- DNS is pinned to the container's configured resolver only. Queries to other DNS servers are rejected.
+- Connections on non-allowed ports are rejected immediately (ICMP admin-prohibited), not silently dropped.
+
+### Time Synchronization
+
+- The container's system clock is kept synchronized with an external time source for the lifetime of the session.
+- Time synchronization starts before the agent and runs continuously in the background, correcting drift caused by host sleep/resume (e.g., macOS lid close with Podman Machine).
+- NTP traffic is restricted to pinned Cloudflare server IPs only; NTP to any other destination is rejected.
+- If time synchronization fails to start, the container starts normally without it — time sync failure never blocks a session.
 
 ### Agent Configuration
 
@@ -133,7 +140,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ### Dependency Management
 
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, claude-code) are grouped into a single PR.
+- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code) are grouped into a single PR.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
 - Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.

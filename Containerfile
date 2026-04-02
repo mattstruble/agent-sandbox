@@ -18,9 +18,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
     jq \
     ca-certificates \
+    chrony \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
+
+# ─── chrony configuration ─────────────────────────────────────────────────────
+# Client-only config using Cloudflare NTP IPs directly (no DNS dependency).
+# makestep 1 3 allows clock stepping for large corrections after host sleep/wake.
+# port 0 / cmdport 0 disable all listening sockets — daemon is outbound-only.
+
+RUN mkdir -p /etc/chrony && cat > /etc/chrony/chrony.conf <<'EOF'
+server 162.159.200.1 iburst
+server 162.159.200.123 iburst
+makestep 1 3
+port 0
+cmdport 0
+driftfile /var/lib/chrony/drift
+EOF
 
 # ─── gh CLI v2.89.0 ───────────────────────────────────────────────────────────
 # Version-pinned; downloaded over TLS. No SHA256 checksum — enables automated
@@ -48,6 +63,8 @@ RUN curl -fsSL \
     && test -x /usr/local/bin/rtk \
     && rm -rf /tmp/rtk.tar.gz /tmp/rtk-extract
 
+ENV RTK_TELEMETRY_DISABLED=1
+
 # ─── uv 0.11.2 ────────────────────────────────────────────────────────────────
 # Copied from the official uv image, pinned by digest for reproducibility.
 # Both /uv and /uvx are copied — uvx is required for tool execution.
@@ -67,23 +84,23 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox
 COPY --chown=root:root --chmod=0755 init-firewall.sh /init-firewall.sh
 COPY --chown=root:root --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# ─── opencode ─────────────────────────────────────────────────────────────────
-# Installed via the official install script into /home/sandbox/.opencode/bin/.
-# The install script is fetched from opencode.ai — the official distribution
-# channel for opencode. No pinned-binary release artifact is published by the
-# opencode project; the install script is the only supported install method.
-# ACCEPTED RISK: The install script is trusted based on TLS to opencode.ai.
-# If a pinned release binary becomes available, migrate to a curl + version-pin
-# + SHA256 checksum verification + install pattern.
-# opencode db migrate runs immediately after install to pre-initialize the
-# database and avoid a hang on first container start (known issue).
-# Both steps are wrapped with timeout to prevent hung build layers.
+# ─── opencode v1.3.13 ─────────────────────────────────────────────────────────
+# Version-pinned; downloaded over TLS from GitHub releases. Architecture is
+# detected at build time via dpkg --print-architecture.
+# opencode db migrate runs at build time to avoid hang on first start.
 
-# opencode install script writes to $HOME; must run as sandbox user.
 ENV HOME=/home/sandbox
 USER sandbox
 
-RUN timeout 120 bash -c "curl -fsSL https://opencode.ai/install | bash" \
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in amd64) OC_ARCH="x64" ;; arm64) OC_ARCH="arm64" ;; *) echo "Unsupported arch: $ARCH" && exit 1 ;; esac \
+    && mkdir -p /home/sandbox/.opencode/bin \
+    && curl -fsSL \
+       "https://github.com/anomalyco/opencode/releases/download/v1.3.13/opencode-linux-${OC_ARCH}.tar.gz" \
+       -o /tmp/opencode.tar.gz \
+    && tar -xzf /tmp/opencode.tar.gz -C /home/sandbox/.opencode/bin \
+    && chmod 755 /home/sandbox/.opencode/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz \
     && timeout 60 /home/sandbox/.opencode/bin/opencode db migrate
 
 # ─── claude-code v2.1.87 ──────────────────────────────────────────────────────

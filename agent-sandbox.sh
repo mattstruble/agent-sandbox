@@ -950,6 +950,7 @@ RUN_CMD=(
 	--cap-add=NET_RAW
 	--cap-add=SETUID
 	--cap-add=SETGID
+	--cap-add=SYS_TIME
 	--security-opt=no-new-privileges
 	"--memory=${CFG_MEMORY}"
 	"--cpus=${CFG_CPUS}"
