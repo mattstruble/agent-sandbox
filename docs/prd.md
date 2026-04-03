@@ -117,14 +117,57 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
 - `agent-sandbox --version` prints the current version and exits.
 
+### Testing & Validation
+
+#### Launcher Unit Tests
+- Launcher functions are extractable and sourceable in isolation via a `BASH_SOURCE` guard without triggering side effects.
+- Argument parsing logic is testable for all flags, invalid inputs, and defaults.
+- Config TOML loading is testable for valid config, missing config, partial config, and invalid TOML.
+- Container name generation produces deterministic names and handles special characters in paths.
+- Image tag computation (SHA256 of Containerfile) is testable in isolation.
+- Symlink resolution is testable with filesystem fixtures covering `follow_symlinks`, `follow_all_symlinks`, nested symlinks, broken symlinks, and symlinks into dotfile directories.
+- Dotfile directory protection rejects mounts that would expose sensitive directories.
+- Extra mount path validation is testable.
+- Resource limit parsing is testable.
+- Environment variable passthrough assembly is testable.
+- Self-update version comparison logic is testable.
+
+#### Container Integration Tests
+- Expected binaries (`opencode`, `claude`, `rtk`, `gh`, `uv`, `node`, `git`) exist and are executable inside the built image.
+- The `sandbox` user exists with UID 1000 and correct permissions.
+- Firewall allows outbound TCP 80 and 443.
+- Firewall allows outbound UDP 123 (NTP) to pinned Cloudflare IPs only; NTP to non-pinned IPs is rejected.
+- Firewall blocks non-allowed ports (e.g., 8080, 3000).
+- DNS resolution works through the pinned resolver.
+- IPv6 is disabled.
+- The entrypoint drops to the `sandbox` user after the root setup phase.
+- Staged host configs (git config, SSH socket, API keys) land at expected paths inside the container and are readable by the `sandbox` user.
+- A fake agent binary mounted over the real agent binary is executed by the entrypoint without production code changes.
+
+#### End-to-End Tests
+- Invoking `agent-sandbox.sh` with a temporary workspace directory starts a container and the fake agent runs to completion.
+- The workspace is mounted correctly at `/workspace` inside the container.
+- When symlink following is enabled, symlinked directories are accessible inside the container with readable contents (not broken symlink paths).
+- The container name matches the expected deterministic pattern.
+- The container is cleaned up after the agent exits.
+
+#### Test Infrastructure
+- Tests use bats-core with bats-assert and bats-support as the test framework.
+- A Makefile provides `test-unit`, `test-integration`, `test-e2e`, `test` (all), and `test-fast` (unit alias) targets.
+- Integration and e2e targets auto-build the container image if not already built.
+- bats-core and helper libraries are provided via a Nix devShell in `flake.nix`.
+- Tests are tagged (`unit`, `integration`, `e2e`) to support selective execution via `bats --filter-tags`.
+- CI runs all test tiers after the image build step in `pr-checks.yml`.
+
 ### Continuous Integration
 
-- Every pull request to main runs lint checks, builds the container image, and scans it for vulnerabilities before merge.
+- Every pull request to main runs lint checks, builds the container image, scans it for vulnerabilities, and runs the full test suite before merge.
 - ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, `install.sh`).
 - `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
 - PR titles are validated against the conventional commit format (required for Release Please changelog generation).
 - Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR and every push to main.
 - Trivy performs a filesystem scan on the repository on every PR and every push to main.
+- All test tiers (unit, integration, e2e) run after the container image is built in CI.
 - All CI checks are required to pass before a PR can be merged.
 - PRs are merged via squash-merge only.
 

@@ -79,100 +79,94 @@ EOF
 # Argument parsing
 # ---------------------------------------------------------------------------
 
-OPT_AGENT=""
-OPT_AGENT_EXPLICIT="" # set only when --agent is passed on CLI; used for --stop dispatch
-OPT_BUILD=false
-OPT_FOLLOW_SYMLINKS=false
-OPT_FOLLOW_ALL_SYMLINKS=false
-OPT_NO_SSH=false
-OPT_LIST=false
-OPT_STOP=false
-OPT_PRUNE=false
-OPT_UPDATE=false
-OPT_HELP=false
-OPT_EXTRA_MOUNTS=()
-OPT_WORKSPACE=""
+parse_args() {
+	OPT_AGENT=""
+	OPT_AGENT_EXPLICIT="" # set only when --agent is passed on CLI; used for --stop dispatch
+	OPT_BUILD=false
+	OPT_FOLLOW_SYMLINKS=false
+	OPT_FOLLOW_ALL_SYMLINKS=false
+	OPT_NO_SSH=false
+	OPT_LIST=false
+	OPT_STOP=false
+	OPT_PRUNE=false
+	OPT_UPDATE=false
+	OPT_HELP=false
+	OPT_VERSION=false
+	OPT_EXTRA_MOUNTS=()
+	OPT_WORKSPACE=""
 
-while [[ $# -gt 0 ]]; do
-	case "$1" in
-	-a | --agent)
-		[[ $# -lt 2 ]] && die "--agent requires an argument"
-		OPT_AGENT="$2"
-		OPT_AGENT_EXPLICIT="$2"
-		shift 2
-		;;
-	-b | --build)
-		OPT_BUILD=true
-		shift
-		;;
-	--follow-symlinks)
-		OPT_FOLLOW_SYMLINKS=true
-		shift
-		;;
-	--follow-all-symlinks)
-		OPT_FOLLOW_ALL_SYMLINKS=true
-		OPT_FOLLOW_SYMLINKS=true
-		shift
-		;;
-	--mount)
-		[[ $# -lt 2 ]] && die "--mount requires an argument"
-		OPT_EXTRA_MOUNTS+=("$2")
-		shift 2
-		;;
-	--no-ssh)
-		OPT_NO_SSH=true
-		shift
-		;;
-	--list)
-		OPT_LIST=true
-		shift
-		;;
-	--stop)
-		OPT_STOP=true
-		shift
-		;;
-	--prune)
-		OPT_PRUNE=true
-		shift
-		;;
-	--update)
-		OPT_UPDATE=true
-		shift
-		;;
-	-v | --version)
-		echo "agent-sandbox ${VERSION}"
-		exit 0
-		;;
-	-h | --help)
-		OPT_HELP=true
-		shift
-		;;
-	--)
-		shift
-		break
-		;;
-	-*)
-		die "Unknown option: $1"
-		;;
-	*)
-		if [[ -z "$OPT_WORKSPACE" ]]; then
-			OPT_WORKSPACE="$1"
-		else
-			die "Unexpected argument: $1"
-		fi
-		shift
-		;;
-	esac
-done
-
-# ---------------------------------------------------------------------------
-# Dispatch: --help (early exit)
-# ---------------------------------------------------------------------------
-
-if $OPT_HELP; then
-	usage
-	exit 0
-fi
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-a | --agent)
+			[[ $# -lt 2 ]] && die "--agent requires an argument"
+			OPT_AGENT="$2"
+			OPT_AGENT_EXPLICIT="$2"
+			shift 2
+			;;
+		-b | --build)
+			OPT_BUILD=true
+			shift
+			;;
+		--follow-symlinks)
+			OPT_FOLLOW_SYMLINKS=true
+			shift
+			;;
+		--follow-all-symlinks)
+			OPT_FOLLOW_ALL_SYMLINKS=true
+			OPT_FOLLOW_SYMLINKS=true
+			shift
+			;;
+		--mount)
+			[[ $# -lt 2 ]] && die "--mount requires an argument"
+			OPT_EXTRA_MOUNTS+=("$2")
+			shift 2
+			;;
+		--no-ssh)
+			OPT_NO_SSH=true
+			shift
+			;;
+		--list)
+			OPT_LIST=true
+			shift
+			;;
+		--stop)
+			OPT_STOP=true
+			shift
+			;;
+		--prune)
+			OPT_PRUNE=true
+			shift
+			;;
+		--update)
+			OPT_UPDATE=true
+			shift
+			;;
+		-v | --version)
+			OPT_VERSION=true
+			shift
+			;;
+		-h | --help)
+			OPT_HELP=true
+			shift
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			die "Unknown option: $1"
+			;;
+		*)
+			if [[ -z "$OPT_WORKSPACE" ]]; then
+				OPT_WORKSPACE="$1"
+			else
+				die "Unexpected argument: $1"
+			fi
+			shift
+			;;
+		esac
+	done
+}
 
 # ---------------------------------------------------------------------------
 # Dispatch: --update (early exit — does not need runtime or config)
@@ -290,10 +284,6 @@ do_update() {
 	exit 0
 }
 
-if $OPT_UPDATE; then
-	do_update
-fi
-
 # ---------------------------------------------------------------------------
 # Config file parsing (~/.config/agent-sandbox/config.toml)
 # ---------------------------------------------------------------------------
@@ -310,6 +300,10 @@ CFG_MEMORY="8g"
 CFG_CPUS=4
 
 parse_config() {
+	# Reset arrays so repeated calls (e.g., in tests) don't accumulate entries
+	CFG_EXTRA_VARS=()
+	CFG_EXTRA_PATHS=()
+
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		return 0
 	fi
@@ -409,28 +403,29 @@ else:
 	fi
 }
 
-parse_config
+# Apply config defaults to CLI options (CLI takes precedence), and validate.
+apply_config_defaults() {
+	# Apply config defaults to CLI options (CLI takes precedence)
+	if [[ -z "$OPT_AGENT" ]]; then
+		OPT_AGENT="$CFG_AGENT"
+	fi
 
-# Apply config defaults to CLI options (CLI takes precedence)
-if [[ -z "$OPT_AGENT" ]]; then
-	OPT_AGENT="$CFG_AGENT"
-fi
+	# Validate agent value
+	if [[ "$OPT_AGENT" != "opencode" && "$OPT_AGENT" != "claude" ]]; then
+		die "--agent must be 'opencode' or 'claude', got '$OPT_AGENT'"
+	fi
 
-# Validate agent value
-if [[ "$OPT_AGENT" != "opencode" && "$OPT_AGENT" != "claude" ]]; then
-	die "--agent must be 'opencode' or 'claude', got '$OPT_AGENT'"
-fi
+	# Apply config follow_symlinks
+	if $CFG_FOLLOW_SYMLINKS; then
+		OPT_FOLLOW_SYMLINKS=true
+	fi
 
-# Apply config follow_symlinks
-if $CFG_FOLLOW_SYMLINKS; then
-	OPT_FOLLOW_SYMLINKS=true
-fi
-
-# Apply config follow_all_symlinks
-if $CFG_FOLLOW_ALL_SYMLINKS; then
-	OPT_FOLLOW_ALL_SYMLINKS=true
-	OPT_FOLLOW_SYMLINKS=true
-fi
+	# Apply config follow_all_symlinks
+	if $CFG_FOLLOW_ALL_SYMLINKS; then
+		OPT_FOLLOW_ALL_SYMLINKS=true
+		OPT_FOLLOW_SYMLINKS=true
+	fi
+}
 
 # ---------------------------------------------------------------------------
 # Runtime detection
@@ -457,25 +452,6 @@ detect_runtime() {
 		die "Neither 'podman' nor 'docker' found in PATH. Install one or set AGENT_SANDBOX_RUNTIME."
 	fi
 }
-
-RUNTIME=""
-detect_runtime
-
-USERNS_FLAG=""
-if [[ "$RUNTIME" == "podman" ]]; then
-	USERNS_FLAG="--userns=keep-id"
-fi
-
-# ---------------------------------------------------------------------------
-# Mount :z suffix (Linux only)
-# ---------------------------------------------------------------------------
-
-# The :z option relabels the mount for container access; safe on non-SELinux Linux too.
-# Not needed on macOS where containers run in a Linux VM.
-MOUNT_Z=""
-if [[ "$(uname -s)" == "Linux" ]]; then
-	MOUNT_Z=",z"
-fi
 
 # ---------------------------------------------------------------------------
 # Workspace validation (needed for --stop, --list uses current dir)
@@ -531,6 +507,7 @@ compute_container_name() {
 # ---------------------------------------------------------------------------
 
 CONTAINERFILE="${SHARE_DIR}/Containerfile"
+RUNTIME=""
 
 compute_containerfile_hash() {
 	if [[ ! -f "$CONTAINERFILE" ]]; then
@@ -638,115 +615,6 @@ do_prune() {
 }
 
 # ---------------------------------------------------------------------------
-# Dispatch: --list, --stop, --prune (now that helpers are defined)
-# ---------------------------------------------------------------------------
-
-if $OPT_LIST; then
-	do_list
-fi
-
-if $OPT_STOP; then
-	do_stop "${OPT_WORKSPACE}" "${OPT_AGENT_EXPLICIT}"
-fi
-
-if $OPT_PRUNE; then
-	do_prune
-fi
-
-# ---------------------------------------------------------------------------
-# Workspace validation (for run)
-# ---------------------------------------------------------------------------
-
-WORKSPACE=$(resolve_workspace "${OPT_WORKSPACE}")
-
-# ---------------------------------------------------------------------------
-# Container naming (for run)
-# ---------------------------------------------------------------------------
-
-CONTAINER_NAME=$(compute_container_name "$OPT_AGENT" "$WORKSPACE")
-
-# ---------------------------------------------------------------------------
-# Image management
-# ---------------------------------------------------------------------------
-
-IMAGE_HASH=$(compute_containerfile_hash)
-IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
-
-if $OPT_BUILD || ! image_exists "$IMAGE_HASH"; then
-	build_image "$IMAGE_HASH"
-fi
-
-# ---------------------------------------------------------------------------
-# Mount assembly
-# ---------------------------------------------------------------------------
-
-MOUNT_FLAGS=()
-
-# Workspace mount (always rw)
-MOUNT_FLAGS+=("-v" "${WORKSPACE}:/workspace:rw${MOUNT_Z}")
-
-# Git config (ro, only if exists)
-if [[ -f "${HOME}/.gitconfig" ]]; then
-	MOUNT_FLAGS+=("-v" "${HOME}/.gitconfig:/home/sandbox/.gitconfig:ro${MOUNT_Z}")
-fi
-
-# Stage host config directories with resolved symlinks.
-# The container cannot follow symlinks that point outside the mount (e.g. Nix
-# store paths). Staging resolves them on the host where targets are accessible.
-# mktemp -d avoids predictable-path attacks; chmod 700 restricts access.
-# NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
-# exec (which replaces the process). The staged dir persists for the container's
-# lifetime — this is fine since the mount is read-only and permissions are tight.
-_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
-# Resolve /tmp -> /private/tmp on macOS so Podman virtiofs bind-mounts work.
-_stage_dir=$(portable_realpath "$_stage_dir")
-chmod 700 "$_stage_dir"
-trap 'rm -rf "$_stage_dir"' EXIT
-
-# OpenCode config (ro, only if dir exists)
-if [[ -d "${HOME}/.config/opencode" ]]; then
-	mkdir -p "$_stage_dir/opencode"
-	if cp -RL "${HOME}/.config/opencode/." "$_stage_dir/opencode/"; then
-		MOUNT_FLAGS+=("-v" "$_stage_dir/opencode:/host-config/opencode/:ro${MOUNT_Z}")
-	else
-		warn "Failed to stage opencode config (symlink resolution failed) — skipping"
-	fi
-fi
-
-# Claude config (ro, only if dir exists)
-if [[ -d "${HOME}/.claude" ]]; then
-	mkdir -p "$_stage_dir/claude"
-	if cp -RL "${HOME}/.claude/." "$_stage_dir/claude/"; then
-		MOUNT_FLAGS+=("-v" "$_stage_dir/claude:/host-config/claude/:ro${MOUNT_Z}")
-	else
-		warn "Failed to stage claude config (symlink resolution failed) — skipping"
-	fi
-fi
-
-# SSH agent socket (ro, unless --no-ssh or SSH_AUTH_SOCK not set)
-SSH_FORWARDED=false
-if ! $OPT_NO_SSH && [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-	# Normalize: expand leading ~ to $HOME and strip literal backslashes.
-	# Common when SSH_AUTH_SOCK is set with unexpanded ~ or backslash-escaped
-	# spaces in shell rc files (e.g. 1Password agent socket paths).
-	_ssh_sock="${SSH_AUTH_SOCK}"
-	_ssh_sock="${_ssh_sock/#\~/$HOME}"
-	_ssh_sock="${_ssh_sock//\\/}"
-	if [[ "$(uname -s)" == "Darwin" && "$RUNTIME" == "podman" ]]; then
-		# Podman Machine uses virtiofs to share the host filesystem with the
-		# Linux VM. virtiofs does not support Unix domain sockets — attempting
-		# to bind-mount one causes a hard 'statfs: operation not supported'
-		# error. Skip SSH forwarding entirely on this combination.
-		warn "SSH agent forwarding is not supported with Podman on macOS (virtiofs limitation). Use Docker Desktop or pass --no-ssh to suppress."
-	elif [[ -S "$_ssh_sock" ]]; then
-		MOUNT_FLAGS+=("-v" "${_ssh_sock}:/tmp/ssh_auth_sock:ro${MOUNT_Z}")
-		SSH_FORWARDED=true
-	else
-		warn "SSH_AUTH_SOCK='${SSH_AUTH_SOCK}' is not a socket, skipping SSH forwarding"
-	fi
-fi
-
-# ---------------------------------------------------------------------------
 # Symlink scanning (--follow-symlinks)
 # ---------------------------------------------------------------------------
 
@@ -804,10 +672,6 @@ collect_symlink_mounts() {
 		log "Mounting symlink target: $target"
 	done < <(find "$WORKSPACE" -maxdepth 1 -print0 2>/dev/null)
 }
-
-if $OPT_FOLLOW_SYMLINKS; then
-	collect_symlink_mounts
-fi
 
 # ---------------------------------------------------------------------------
 # Extra mounts (--mount CLI + config.toml [mounts] extra_paths)
@@ -871,97 +735,259 @@ collect_extra_mounts() {
 	done
 }
 
-collect_extra_mounts
+# ---------------------------------------------------------------------------
+# Mount assembly
+# ---------------------------------------------------------------------------
+
+assemble_mount_flags() {
+	MOUNT_FLAGS=()
+
+	# Workspace mount (always rw)
+	MOUNT_FLAGS+=("-v" "${WORKSPACE}:/workspace:rw${MOUNT_Z}")
+
+	# Git config (ro, only if exists)
+	if [[ -f "${HOME}/.gitconfig" ]]; then
+		MOUNT_FLAGS+=("-v" "${HOME}/.gitconfig:/home/sandbox/.gitconfig:ro${MOUNT_Z}")
+	fi
+
+	# Stage host config directories with resolved symlinks.
+	# The container cannot follow symlinks that point outside the mount (e.g. Nix
+	# store paths). Staging resolves them on the host where targets are accessible.
+	# mktemp -d avoids predictable-path attacks; chmod 700 restricts access.
+	# NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
+	# exec (which replaces the process). The staged dir persists for the container's
+	# lifetime — this is fine since the mount is read-only and permissions are tight.
+	_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
+	# Register cleanup trap immediately after mktemp so the directory is always
+	# removed on exit, even if portable_realpath fails before the trap is set.
+	# shellcheck disable=SC2064  # intentional: bake in the path at trap-set time
+	trap "rm -rf '${_stage_dir}'" EXIT
+	# Resolve /tmp -> /private/tmp on macOS so Podman virtiofs bind-mounts work.
+	_stage_dir=$(portable_realpath "$_stage_dir")
+	chmod 700 "$_stage_dir"
+	# Re-register trap with the resolved path so cleanup uses the canonical path.
+	# shellcheck disable=SC2064
+	trap "rm -rf '${_stage_dir}'" EXIT
+
+	# OpenCode config (ro, only if dir exists)
+	if [[ -d "${HOME}/.config/opencode" ]]; then
+		mkdir -p "$_stage_dir/opencode"
+		if cp -RL "${HOME}/.config/opencode/." "$_stage_dir/opencode/"; then
+			MOUNT_FLAGS+=("-v" "$_stage_dir/opencode:/host-config/opencode/:ro${MOUNT_Z}")
+		else
+			warn "Failed to stage opencode config (symlink resolution failed) — skipping"
+		fi
+	fi
+
+	# Claude config (ro, only if dir exists)
+	if [[ -d "${HOME}/.claude" ]]; then
+		mkdir -p "$_stage_dir/claude"
+		if cp -RL "${HOME}/.claude/." "$_stage_dir/claude/"; then
+			MOUNT_FLAGS+=("-v" "$_stage_dir/claude:/host-config/claude/:ro${MOUNT_Z}")
+		else
+			warn "Failed to stage claude config (symlink resolution failed) — skipping"
+		fi
+	fi
+
+	# SSH agent socket (ro, unless --no-ssh or SSH_AUTH_SOCK not set)
+	SSH_FORWARDED=false
+	if ! $OPT_NO_SSH && [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+		# Normalize: expand leading ~ to $HOME and strip literal backslashes.
+		# Common when SSH_AUTH_SOCK is set with unexpanded ~ or backslash-escaped
+		# spaces in shell rc files (e.g. 1Password agent socket paths).
+		_ssh_sock="${SSH_AUTH_SOCK}"
+		_ssh_sock="${_ssh_sock/#\~/$HOME}"
+		_ssh_sock="${_ssh_sock//\\/}"
+		if [[ "$(uname -s)" == "Darwin" && "$RUNTIME" == "podman" ]]; then
+			# Podman Machine uses virtiofs to share the host filesystem with the
+			# Linux VM. virtiofs does not support Unix domain sockets — attempting
+			# to bind-mount one causes a hard 'statfs: operation not supported'
+			# error. Skip SSH forwarding entirely on this combination.
+			warn "SSH agent forwarding is not supported with Podman on macOS (virtiofs limitation). Use Docker Desktop or pass --no-ssh to suppress."
+		elif [[ -S "$_ssh_sock" ]]; then
+			MOUNT_FLAGS+=("-v" "${_ssh_sock}:/tmp/ssh_auth_sock:ro${MOUNT_Z}")
+			SSH_FORWARDED=true
+		else
+			warn "SSH_AUTH_SOCK='${SSH_AUTH_SOCK}' is not a socket, skipping SSH forwarding"
+		fi
+	fi
+
+	if $OPT_FOLLOW_SYMLINKS; then
+		collect_symlink_mounts
+	fi
+
+	collect_extra_mounts
+}
 
 # ---------------------------------------------------------------------------
 # Environment variable assembly
 # ---------------------------------------------------------------------------
 
-ENV_FLAGS=()
+assemble_env_flags() {
+	ENV_FLAGS=()
 
-# Default API key set
-DEFAULT_ENV_VARS=(
-	"ANTHROPIC_API_KEY"
-	"OPENAI_API_KEY"
-	"OPENROUTER_API_KEY"
-	"MISTRAL_API_KEY"
-	"AWS_ACCESS_KEY_ID"
-	"AWS_SECRET_ACCESS_KEY"
-	"AWS_SESSION_TOKEN"
-	"GITHUB_TOKEN"
-)
+	# Default API key set
+	DEFAULT_ENV_VARS=(
+		"ANTHROPIC_API_KEY"
+		"OPENAI_API_KEY"
+		"OPENROUTER_API_KEY"
+		"MISTRAL_API_KEY"
+		"AWS_ACCESS_KEY_ID"
+		"AWS_SECRET_ACCESS_KEY"
+		"AWS_SESSION_TOKEN"
+		"GITHUB_TOKEN"
+	)
 
-# Merge with extra_vars from config (CFG_EXTRA_VARS may be empty)
-ALL_ENV_VARS=("${DEFAULT_ENV_VARS[@]}" "${CFG_EXTRA_VARS[@]}")
+	# Merge with extra_vars from config (CFG_EXTRA_VARS may be empty)
+	ALL_ENV_VARS=("${DEFAULT_ENV_VARS[@]}" "${CFG_EXTRA_VARS[@]}")
 
-for varname in "${ALL_ENV_VARS[@]}"; do
-	if [[ -n "${!varname:-}" ]]; then
-		ENV_FLAGS+=("-e" "$varname")
+	for varname in "${ALL_ENV_VARS[@]}"; do
+		if [[ -n "${!varname:-}" ]]; then
+			ENV_FLAGS+=("-e" "$varname")
+		fi
+	done
+
+	# Always set AGENT
+	ENV_FLAGS+=("-e" "AGENT=${OPT_AGENT}")
+
+	# SSH_AUTH_SOCK inside container
+	if $SSH_FORWARDED; then
+		ENV_FLAGS+=("-e" "SSH_AUTH_SOCK=/tmp/ssh_auth_sock")
 	fi
-done
 
-# Always set AGENT
-ENV_FLAGS+=("-e" "AGENT=${OPT_AGENT}")
-
-# SSH_AUTH_SOCK inside container
-if $SSH_FORWARDED; then
-	ENV_FLAGS+=("-e" "SSH_AUTH_SOCK=/tmp/ssh_auth_sock")
-fi
-
-# AGENT_SANDBOX_NO_SSH
-if $OPT_NO_SSH; then
-	ENV_FLAGS+=("-e" "AGENT_SANDBOX_NO_SSH=1")
-fi
+	# AGENT_SANDBOX_NO_SSH
+	if $OPT_NO_SSH; then
+		ENV_FLAGS+=("-e" "AGENT_SANDBOX_NO_SSH=1")
+	fi
+}
 
 # ---------------------------------------------------------------------------
-# Session deduplication check
+# Main entry point
 # ---------------------------------------------------------------------------
 
-# Use substring filter + grep for exact match: Docker doesn't support regex anchors
-# in --filter name=, but Podman does. The grep -Fx approach works on both.
-EXISTING_CONTAINER=$("$RUNTIME" ps --filter "name=agent-sandbox-" --format "{{.Names}}" 2>/dev/null | grep -Fx "$CONTAINER_NAME" || true)
-if [[ -n "$EXISTING_CONTAINER" ]]; then
-	log "Container '$CONTAINER_NAME' is already running and serving your workspace."
-	log "Use '--stop' to stop it, or '--list' to see all running sandboxes."
-	exit 0
+main() {
+	parse_args "$@"
+
+	if $OPT_HELP; then
+		usage
+		exit 0
+	fi
+	if $OPT_VERSION; then
+		echo "agent-sandbox ${VERSION}"
+		exit 0
+	fi
+	if $OPT_UPDATE; then do_update; fi
+
+	parse_config
+	apply_config_defaults
+	detect_runtime
+
+	# USERNS_FLAG logic
+	USERNS_FLAG=""
+	if [[ "$RUNTIME" == "podman" ]]; then USERNS_FLAG="--userns=keep-id"; fi
+
+	# MOUNT_Z logic
+	# The :z option relabels the mount for container access; safe on non-SELinux Linux too.
+	# Not needed on macOS where containers run in a Linux VM.
+	MOUNT_Z=""
+	if [[ "$(uname -s)" == "Linux" ]]; then MOUNT_Z=",z"; fi
+
+	# ---------------------------------------------------------------------------
+	# Dispatch: --list, --stop, --prune (now that helpers are defined)
+	# ---------------------------------------------------------------------------
+
+	if $OPT_LIST; then do_list; fi
+	if $OPT_STOP; then do_stop "${OPT_WORKSPACE}" "${OPT_AGENT_EXPLICIT}"; fi
+	if $OPT_PRUNE; then do_prune; fi
+
+	# ---------------------------------------------------------------------------
+	# Workspace validation (for run)
+	# ---------------------------------------------------------------------------
+
+	WORKSPACE=$(resolve_workspace "${OPT_WORKSPACE}")
+
+	# ---------------------------------------------------------------------------
+	# Container naming (for run)
+	# ---------------------------------------------------------------------------
+
+	CONTAINER_NAME=$(compute_container_name "$OPT_AGENT" "$WORKSPACE")
+
+	# ---------------------------------------------------------------------------
+	# Image management
+	# ---------------------------------------------------------------------------
+
+	IMAGE_HASH=$(compute_containerfile_hash)
+	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+
+	if $OPT_BUILD || ! image_exists "$IMAGE_HASH"; then
+		build_image "$IMAGE_HASH"
+	fi
+
+	# ---------------------------------------------------------------------------
+	# Mount and environment assembly
+	# ---------------------------------------------------------------------------
+
+	assemble_mount_flags
+	assemble_env_flags
+
+	# ---------------------------------------------------------------------------
+	# Session deduplication check
+	# ---------------------------------------------------------------------------
+
+	# Use substring filter + grep for exact match: Docker doesn't support regex anchors
+	# in --filter name=, but Podman does. The grep -Fx approach works on both.
+	EXISTING_CONTAINER=$("$RUNTIME" ps --filter "name=agent-sandbox-" --format "{{.Names}}" 2>/dev/null | grep -Fx "$CONTAINER_NAME" || true)
+	if [[ -n "$EXISTING_CONTAINER" ]]; then
+		log "Container '$CONTAINER_NAME' is already running and serving your workspace."
+		log "Use '--stop' to stop it, or '--list' to see all running sandboxes."
+		exit 0
+	fi
+
+	# ---------------------------------------------------------------------------
+	# Container run
+	# ---------------------------------------------------------------------------
+
+	log "Starting sandbox: $CONTAINER_NAME"
+	log "  Agent:     $OPT_AGENT"
+	log "  Workspace: $WORKSPACE"
+	log "  Image:     $IMAGE_TAG"
+	log "  Runtime:   $RUNTIME"
+
+	RUN_CMD=(
+		run
+		--rm
+		-i
+		-t
+		--name "$CONTAINER_NAME"
+		--sysctl=net.ipv6.conf.all.disable_ipv6=1
+		--sysctl=net.ipv6.conf.default.disable_ipv6=1
+		--sysctl=net.ipv6.conf.lo.disable_ipv6=1
+		--cap-drop=ALL
+		--cap-add=NET_ADMIN
+		--cap-add=NET_RAW
+		--cap-add=SETUID
+		--cap-add=SETGID
+		--cap-add=SYS_TIME
+		--security-opt=no-new-privileges
+		"--memory=${CFG_MEMORY}"
+		"--cpus=${CFG_CPUS}"
+	)
+
+	if [[ -n "$USERNS_FLAG" ]]; then
+		RUN_CMD+=("$USERNS_FLAG")
+	fi
+
+	RUN_CMD+=("${MOUNT_FLAGS[@]}")
+	RUN_CMD+=("${ENV_FLAGS[@]}")
+	RUN_CMD+=("$IMAGE_TAG")
+
+	exec "$RUNTIME" "${RUN_CMD[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# Entry point guard — only run main() when executed directly, not when sourced
+# ---------------------------------------------------------------------------
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
 fi
-
-# ---------------------------------------------------------------------------
-# Container run
-# ---------------------------------------------------------------------------
-
-log "Starting sandbox: $CONTAINER_NAME"
-log "  Agent:     $OPT_AGENT"
-log "  Workspace: $WORKSPACE"
-log "  Image:     $IMAGE_TAG"
-log "  Runtime:   $RUNTIME"
-
-RUN_CMD=(
-	run
-	--rm
-	-i
-	-t
-	--name "$CONTAINER_NAME"
-	--sysctl=net.ipv6.conf.all.disable_ipv6=1
-	--sysctl=net.ipv6.conf.default.disable_ipv6=1
-	--sysctl=net.ipv6.conf.lo.disable_ipv6=1
-	--cap-drop=ALL
-	--cap-add=NET_ADMIN
-	--cap-add=NET_RAW
-	--cap-add=SETUID
-	--cap-add=SETGID
-	--cap-add=SYS_TIME
-	--security-opt=no-new-privileges
-	"--memory=${CFG_MEMORY}"
-	"--cpus=${CFG_CPUS}"
-)
-
-if [[ -n "$USERNS_FLAG" ]]; then
-	RUN_CMD+=("$USERNS_FLAG")
-fi
-
-RUN_CMD+=("${MOUNT_FLAGS[@]}")
-RUN_CMD+=("${ENV_FLAGS[@]}")
-RUN_CMD+=("$IMAGE_TAG")
-
-exec "$RUNTIME" "${RUN_CMD[@]}"

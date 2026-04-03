@@ -1,0 +1,12 @@
+[defaults]
+agent = "claude"
+
+[env]
+extra_vars = ["CUSTOM_VAR"]
+
+[workspace]
+follow_symlinks = true
+
+[resources]
+memory = "16g"
+cpus = 8
