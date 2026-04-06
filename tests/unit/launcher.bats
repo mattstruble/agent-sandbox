@@ -831,8 +831,11 @@ teardown() {
 @test "assemble_env_flags: always includes AGENT env var" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -852,8 +855,11 @@ teardown() {
 @test "assemble_env_flags: includes set API key env vars" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
     export ANTHROPIC_API_KEY="test-key-value"
     unset OPENAI_API_KEY 2>/dev/null || true
 
@@ -881,8 +887,11 @@ teardown() {
 @test "assemble_env_flags: does not include unset API key env vars" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
     unset ANTHROPIC_API_KEY  2>/dev/null || true
     unset OPENAI_API_KEY     2>/dev/null || true
     unset OPENROUTER_API_KEY 2>/dev/null || true
@@ -899,8 +908,8 @@ teardown() {
     for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
         if [[ "${ENV_FLAGS[$i]}" == "-e" ]]; then
             local val="${ENV_FLAGS[$i+1]}"
-            # Only AGENT=... and possibly SSH/NO_SSH flags are expected
-            if [[ "$val" != "AGENT="* && "$val" != "SSH_AUTH_SOCK="* && "$val" != "AGENT_SANDBOX_NO_SSH="* ]]; then
+            # Only AGENT=... , proxy, and possibly SSH/NO_SSH flags are expected
+            if [[ "$val" != "AGENT="* && "$val" != "SSH_AUTH_SOCK="* && "$val" != "AGENT_SANDBOX_NO_SSH="* && "$val" != "PROXY_ENABLED="* ]]; then
                 fail "Unexpected env flag: $val"
             fi
         fi
@@ -911,8 +920,11 @@ teardown() {
 @test "assemble_env_flags: includes CFG_EXTRA_VARS when set" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=("MY_CUSTOM_VAR")
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
     export MY_CUSTOM_VAR="custom-value"
 
     assemble_env_flags
@@ -934,8 +946,11 @@ teardown() {
 @test "assemble_env_flags: does not include CFG_EXTRA_VARS when var is unset" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=("MY_UNSET_VAR")
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
     unset MY_UNSET_VAR 2>/dev/null || true
 
     assemble_env_flags
@@ -955,8 +970,11 @@ teardown() {
 @test "assemble_env_flags: includes SSH_AUTH_SOCK when SSH_FORWARDED=true" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=true
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -975,8 +993,11 @@ teardown() {
 @test "assemble_env_flags: does not include SSH_AUTH_SOCK when SSH_FORWARDED=false" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -995,8 +1016,11 @@ teardown() {
 @test "assemble_env_flags: includes AGENT_SANDBOX_NO_SSH when OPT_NO_SSH=true" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=true
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -1015,8 +1039,11 @@ teardown() {
 @test "assemble_env_flags: does not include AGENT_SANDBOX_NO_SSH when OPT_NO_SSH=false" {
     OPT_AGENT="opencode"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -1035,8 +1062,11 @@ teardown() {
 @test "assemble_env_flags: AGENT reflects claude when OPT_AGENT=claude" {
     OPT_AGENT="claude"
     OPT_NO_SSH=false
+    OPT_NO_PROXY=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
 
     assemble_env_flags
 
@@ -1131,4 +1161,361 @@ teardown() {
 
     assert_success
     assert_output "$expected"
+}
+
+# ---------------------------------------------------------------------------
+# 9. Proxy Configuration Tests
+# ---------------------------------------------------------------------------
+
+# -- 9a. parse_args --no-proxy flag --
+
+# bats test_tags=unit
+@test "parse_args: --no-proxy sets OPT_NO_PROXY to true" {
+    parse_args --no-proxy
+
+    [[ "$OPT_NO_PROXY" == true ]]
+}
+
+# bats test_tags=unit
+@test "parse_args: no arguments sets OPT_NO_PROXY to false" {
+    parse_args
+
+    [[ "$OPT_NO_PROXY" == false ]]
+}
+
+# -- 9b. parse_config [proxy] section --
+
+# bats test_tags=unit
+@test "parse_config: proxy defaults — CFG_PROXY_ENABLED=true, empty arrays" {
+    CONFIG_FILE="/nonexistent/path/config.toml"
+    parse_config
+
+    [[ "$CFG_PROXY_ENABLED" == true ]]
+    [[ "${#CFG_PROXY_ALLOWED_POST_URLS[@]}" -eq 0 ]]
+    [[ "${#CFG_PROXY_EXTRA_CA_CERTS[@]}" -eq 0 ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.enabled=true sets CFG_PROXY_ENABLED=true" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-enabled.toml"
+    parse_config
+
+    [[ "$CFG_PROXY_ENABLED" == true ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.enabled=false sets CFG_PROXY_ENABLED=false" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-disabled.toml"
+    parse_config
+
+    [[ "$CFG_PROXY_ENABLED" == false ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.allowed_post_urls populates CFG_PROXY_ALLOWED_POST_URLS" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-enabled.toml"
+    parse_config
+
+    [[ "${#CFG_PROXY_ALLOWED_POST_URLS[@]}" -eq 2 ]]
+    [[ "${CFG_PROXY_ALLOWED_POST_URLS[0]}" == "api.example.com" ]]
+    [[ "${CFG_PROXY_ALLOWED_POST_URLS[1]}" == "https://custom.api.io" ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.extra_ca_certs populates CFG_PROXY_EXTRA_CA_CERTS" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-extra-certs.toml"
+    parse_config
+
+    [[ "${#CFG_PROXY_EXTRA_CA_CERTS[@]}" -eq 2 ]]
+    [[ "${CFG_PROXY_EXTRA_CA_CERTS[0]}" == "/etc/ssl/corp-ca.pem" ]]
+    [[ "${CFG_PROXY_EXTRA_CA_CERTS[1]}" == "~/certs/my-ca.crt" ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.allowed_post_urls with empty string exits with error" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-empty-url.toml"
+
+    run parse_config
+
+    assert_failure
+    assert_output --partial "empty"
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.allowed_post_urls with whitespace-only string exits with error" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-whitespace-url.toml"
+
+    run parse_config
+
+    assert_failure
+    assert_output --partial "empty"
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.extra_ca_certs with empty string exits with error" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-empty-cert.toml"
+
+    run parse_config
+
+    assert_failure
+    assert_output --partial "empty"
+}
+
+# bats test_tags=unit
+@test "parse_config: proxy.extra_ca_certs with whitespace-only string exits with error" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-whitespace-cert.toml"
+
+    run parse_config
+
+    assert_failure
+    assert_output --partial "empty"
+}
+
+# bats test_tags=unit
+@test "parse_config: repeated calls reset proxy arrays (no accumulation)" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-proxy-enabled.toml"
+    parse_config
+    parse_config
+
+    [[ "${#CFG_PROXY_ALLOWED_POST_URLS[@]}" -eq 2 ]]
+}
+
+# bats test_tags=unit
+@test "parse_config: config without [proxy] section keeps defaults" {
+    CONFIG_FILE="${FIXTURE_DIR}/config-partial.toml"
+    parse_config
+
+    [[ "$CFG_PROXY_ENABLED" == true ]]
+    [[ "${#CFG_PROXY_ALLOWED_POST_URLS[@]}" -eq 0 ]]
+    [[ "${#CFG_PROXY_EXTRA_CA_CERTS[@]}" -eq 0 ]]
+}
+
+# -- 9c. apply_config_defaults proxy integration --
+
+# bats test_tags=unit
+@test "apply_config_defaults: --no-proxy overrides CFG_PROXY_ENABLED=true" {
+    parse_args --no-proxy
+    CFG_AGENT="opencode"
+    CFG_PROXY_ENABLED=true
+    apply_config_defaults
+
+    [[ "$OPT_NO_PROXY" == true ]]
+}
+
+# bats test_tags=unit
+@test "apply_config_defaults: CFG_PROXY_ENABLED=false without --no-proxy sets OPT_NO_PROXY=true" {
+    parse_args
+    CFG_AGENT="opencode"
+    CFG_PROXY_ENABLED=false
+    apply_config_defaults
+
+    [[ "$OPT_NO_PROXY" == true ]]
+}
+
+# bats test_tags=unit
+@test "apply_config_defaults: CFG_PROXY_ENABLED=true without --no-proxy leaves OPT_NO_PROXY=false" {
+    parse_args
+    CFG_AGENT="opencode"
+    CFG_PROXY_ENABLED=true
+    apply_config_defaults
+
+    [[ "$OPT_NO_PROXY" == false ]]
+}
+
+# -- 9d. assemble_env_flags proxy env vars --
+
+# bats test_tags=unit
+@test "assemble_env_flags: includes PROXY_ENABLED=true when OPT_NO_PROXY=false" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=false
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "PROXY_ENABLED=true" ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "assemble_env_flags: includes PROXY_ENABLED=false when OPT_NO_PROXY=true" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=true
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "PROXY_ENABLED=false" ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "assemble_env_flags: includes PROXY_ALLOW_POST_EXTRA when URLs configured" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=false
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=("api.example.com" "https://custom.api.io")
+    CFG_PROXY_EXTRA_CA_CERTS=()
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "PROXY_ALLOW_POST_EXTRA=api.example.com,https://custom.api.io" ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "assemble_env_flags: omits PROXY_ALLOW_POST_EXTRA when URLs list is empty" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=false
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == PROXY_ALLOW_POST_EXTRA* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == false ]]
+}
+
+# bats test_tags=unit
+@test "assemble_env_flags: includes PROXY_EXTRA_CA_CERTS when certs configured" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=false
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=("/etc/ssl/corp-ca.pem" "/home/user/certs/my-ca.crt")
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "PROXY_EXTRA_CA_CERTS=/etc/ssl/corp-ca.pem,/home/user/certs/my-ca.crt" ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "assemble_env_flags: omits PROXY_EXTRA_CA_CERTS when certs list is empty" {
+    OPT_AGENT="opencode"
+    OPT_NO_SSH=false
+    OPT_NO_PROXY=false
+    SSH_FORWARDED=false
+    CFG_EXTRA_VARS=()
+    CFG_PROXY_ALLOWED_POST_URLS=()
+    CFG_PROXY_EXTRA_CA_CERTS=()
+
+    assemble_env_flags
+
+    local found=false
+    local i
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == PROXY_EXTRA_CA_CERTS* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == false ]]
+}
+
+# -- 9e. assemble_mount_flags extra_ca_certs --
+
+# bats test_tags=unit
+@test "assemble_mount_flags: mounts existing extra_ca_certs read-only" {
+    local tmp_cert
+    tmp_cert="$(make_temp)"
+    echo "-----BEGIN CERTIFICATE-----" > "$tmp_cert"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp_cert'" EXIT
+
+    WORKSPACE="$(make_tempdir)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$WORKSPACE' '$tmp_cert'" EXIT
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    CFG_PROXY_EXTRA_CA_CERTS=("$tmp_cert")
+    MOUNT_Z=""
+    RUNTIME="podman"
+
+    assemble_mount_flags
+
+    rm -rf "$WORKSPACE" "$tmp_cert"
+    trap - EXIT
+
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *"$tmp_cert"*":ro"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: warns and skips non-existent extra_ca_certs" {
+    WORKSPACE="$(make_tempdir)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$WORKSPACE'" EXIT
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    CFG_PROXY_EXTRA_CA_CERTS=("/nonexistent/cert.pem")
+    MOUNT_Z=""
+    RUNTIME="podman"
+
+    run assemble_mount_flags
+
+    rm -rf "$WORKSPACE"
+    trap - EXIT
+
+    assert_success
+    assert_output --partial "does not exist"
 }

@@ -29,6 +29,11 @@ let
       memory = cfg.settings.resources.memory;
       cpus = cfg.settings.resources.cpus;
     };
+    proxy = {
+      enabled = cfg.settings.proxy.enabled;
+      allowed_post_urls = cfg.settings.proxy.allowedPostUrls;
+      extra_ca_certs = cfg.settings.proxy.extraCaCerts;
+    };
   };
 
   # True when every setting is at its default; suppresses config file generation
@@ -39,7 +44,10 @@ let
     && cfg.settings.workspace.followAllSymlinks == false
     && cfg.settings.mounts.extraPaths == [ ]
     && cfg.settings.resources.memory == "8g"
-    && cfg.settings.resources.cpus == 4;
+    && cfg.settings.resources.cpus == 4
+    && cfg.settings.proxy.enabled == true
+    && cfg.settings.proxy.allowedPostUrls == [ ]
+    && cfg.settings.proxy.extraCaCerts == [ ];
 in
 {
   options.programs.agent-sandbox = {
@@ -98,6 +106,24 @@ in
         type = lib.types.ints.positive;
         default = 4;
         description = "Container CPU limit.";
+      };
+
+      proxy.enabled = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Enable the MITM proxy for HTTP method filtering. When false, outbound HTTP/HTTPS is unrestricted.";
+      };
+
+      proxy.allowedPostUrls = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Additional domains to allow write methods (POST/PUT/PATCH/DELETE) through the proxy.";
+      };
+
+      proxy.extraCaCerts = lib.mkOption {
+        type = lib.types.listOf lib.types.path;
+        default = [ ];
+        description = "Extra CA certificate files to trust inside the sandbox (e.g. corporate CAs).";
       };
     };
   };

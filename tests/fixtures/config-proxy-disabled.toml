@@ -1,0 +1,5 @@
+[defaults]
+agent = "opencode"
+
+[proxy]
+enabled = false

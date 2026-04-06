@@ -1,0 +1,5 @@
+[defaults]
+agent = "opencode"
+
+[proxy]
+extra_ca_certs = ["/etc/ssl/corp-ca.pem", "   "]

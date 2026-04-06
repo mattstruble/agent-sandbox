@@ -1,0 +1,5 @@
+[defaults]
+agent = "opencode"
+
+[proxy]
+allowed_post_urls = ["api.example.com", "   ", "another.com"]

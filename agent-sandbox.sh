@@ -46,6 +46,7 @@ Options:
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories (.ssh, .gnupg, etc.)
   --mount <path>           Mount an extra host path read-only (repeatable; append :rw for read-write)
   --no-ssh                 Skip SSH agent socket forwarding
+  --no-proxy               Disable the MITM proxy for this session
   --list                   List running agent-sandbox containers
   --stop                   Stop sandbox(es) for the given/current workspace
   --prune                  Remove old agent-sandbox images, keeping only the current hash
@@ -86,6 +87,7 @@ parse_args() {
 	OPT_FOLLOW_SYMLINKS=false
 	OPT_FOLLOW_ALL_SYMLINKS=false
 	OPT_NO_SSH=false
+	OPT_NO_PROXY=false
 	OPT_LIST=false
 	OPT_STOP=false
 	OPT_PRUNE=false
@@ -123,6 +125,10 @@ parse_args() {
 			;;
 		--no-ssh)
 			OPT_NO_SSH=true
+			shift
+			;;
+		--no-proxy)
+			OPT_NO_PROXY=true
 			shift
 			;;
 		--list)
@@ -298,11 +304,16 @@ CFG_FOLLOW_ALL_SYMLINKS=false
 CFG_EXTRA_PATHS=()
 CFG_MEMORY="8g"
 CFG_CPUS=4
+CFG_PROXY_ENABLED=true
+CFG_PROXY_ALLOWED_POST_URLS=()
+CFG_PROXY_EXTRA_CA_CERTS=()
 
 parse_config() {
 	# Reset arrays so repeated calls (e.g., in tests) don't accumulate entries
 	CFG_EXTRA_VARS=()
 	CFG_EXTRA_PATHS=()
+	CFG_PROXY_ALLOWED_POST_URLS=()
+	CFG_PROXY_EXTRA_CA_CERTS=()
 
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		return 0
@@ -401,6 +412,38 @@ else:
 		fi
 		CFG_CPUS="$val"
 	fi
+
+	# [proxy] enabled (boolean, default true)
+	val=$(_cfg_get "proxy.enabled")
+	if [[ "$val" == "false" ]]; then
+		CFG_PROXY_ENABLED=false
+	elif [[ "$val" == "true" ]]; then
+		CFG_PROXY_ENABLED=true
+	fi
+
+	# [proxy] allowed_post_urls (array of domain strings)
+	# Validation uses process substitution (not command substitution) to preserve
+	# empty lines from _cfg_get — command substitution strips trailing newlines,
+	# which would hide an empty string at the end of the list.
+	local _ws_regex='^[[:space:]]*$'
+	local _has_proxy_urls=false
+	while IFS= read -r url; do
+		_has_proxy_urls=true
+		if [[ -z "$url" ]] || [[ -z "${url// /}" ]] || [[ "$url" =~ $_ws_regex ]]; then
+			die "Config error: proxy.allowed_post_urls contains an empty or whitespace-only entry"
+		fi
+		CFG_PROXY_ALLOWED_POST_URLS+=("$url")
+	done < <(_cfg_get "proxy.allowed_post_urls")
+
+	# [proxy] extra_ca_certs (array of file paths)
+	local _has_proxy_certs=false
+	while IFS= read -r certpath; do
+		_has_proxy_certs=true
+		if [[ -z "$certpath" ]] || [[ -z "${certpath// /}" ]] || [[ "$certpath" =~ $_ws_regex ]]; then
+			die "Config error: proxy.extra_ca_certs contains an empty or whitespace-only entry"
+		fi
+		CFG_PROXY_EXTRA_CA_CERTS+=("$certpath")
+	done < <(_cfg_get "proxy.extra_ca_certs")
 }
 
 # Apply config defaults to CLI options (CLI takes precedence), and validate.
@@ -424,6 +467,11 @@ apply_config_defaults() {
 	if $CFG_FOLLOW_ALL_SYMLINKS; then
 		OPT_FOLLOW_ALL_SYMLINKS=true
 		OPT_FOLLOW_SYMLINKS=true
+	fi
+
+	# Apply config proxy.enabled (CLI --no-proxy takes precedence)
+	if ! $CFG_PROXY_ENABLED && ! $OPT_NO_PROXY; then
+		OPT_NO_PROXY=true
 	fi
 }
 
@@ -817,6 +865,24 @@ assemble_mount_flags() {
 	fi
 
 	collect_extra_mounts
+
+	# Mount extra CA certificate files for proxy (read-only)
+	local _cert_path
+	for _cert_path in "${CFG_PROXY_EXTRA_CA_CERTS[@]}"; do
+		# Expand ~/
+		_cert_path="${_cert_path/#\~/$HOME}"
+		if [[ ! -f "$_cert_path" ]]; then
+			warn "Proxy extra CA cert does not exist, skipping: $_cert_path"
+			continue
+		fi
+		local _resolved_cert
+		_resolved_cert=$(portable_realpath "$_cert_path" 2>/dev/null || true)
+		if [[ -z "$_resolved_cert" ]]; then
+			warn "Cannot resolve proxy CA cert path, skipping: $_cert_path"
+			continue
+		fi
+		MOUNT_FLAGS+=("-v" "${_resolved_cert}:${_resolved_cert}:ro${MOUNT_Z}")
+	done
 }
 
 # ---------------------------------------------------------------------------
@@ -858,6 +924,43 @@ assemble_env_flags() {
 	# AGENT_SANDBOX_NO_SSH
 	if $OPT_NO_SSH; then
 		ENV_FLAGS+=("-e" "AGENT_SANDBOX_NO_SSH=1")
+	fi
+
+	# Proxy configuration
+	if $OPT_NO_PROXY; then
+		ENV_FLAGS+=("-e" "PROXY_ENABLED=false")
+	else
+		ENV_FLAGS+=("-e" "PROXY_ENABLED=true")
+	fi
+
+	# Proxy allowed POST URLs (comma-separated)
+	if [[ ${#CFG_PROXY_ALLOWED_POST_URLS[@]} -gt 0 ]]; then
+		local _proxy_urls=""
+		local _url
+		for _url in "${CFG_PROXY_ALLOWED_POST_URLS[@]}"; do
+			if [[ -n "$_proxy_urls" ]]; then
+				_proxy_urls="${_proxy_urls},${_url}"
+			else
+				_proxy_urls="$_url"
+			fi
+		done
+		ENV_FLAGS+=("-e" "PROXY_ALLOW_POST_EXTRA=${_proxy_urls}")
+	fi
+
+	# Proxy extra CA certificates (comma-separated resolved paths)
+	if [[ ${#CFG_PROXY_EXTRA_CA_CERTS[@]} -gt 0 ]]; then
+		local _proxy_certs=""
+		local _cert
+		for _cert in "${CFG_PROXY_EXTRA_CA_CERTS[@]}"; do
+			# Expand ~/
+			_cert="${_cert/#\~/$HOME}"
+			if [[ -n "$_proxy_certs" ]]; then
+				_proxy_certs="${_proxy_certs},${_cert}"
+			else
+				_proxy_certs="$_cert"
+			fi
+		done
+		ENV_FLAGS+=("-e" "PROXY_EXTRA_CA_CERTS=${_proxy_certs}")
 	fi
 }
 

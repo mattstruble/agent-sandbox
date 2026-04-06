@@ -1,3 +1,9 @@
+FROM golang:1.24-bookworm AS proxy-builder
+
+WORKDIR /build
+COPY proxy/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o sandbox-proxy .
+
 FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.title="agent-sandbox"
@@ -21,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chrony \
     nodejs \
     npm \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── chrony configuration ─────────────────────────────────────────────────────
@@ -79,10 +86,19 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a19
 
 RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox
 
+# ─── proxy user ───────────────────────────────────────────────────────────────
+# Dedicated system user for the proxy process. iptables --uid-owner rules use
+# this UID to allow the proxy (and only the proxy) to make upstream 80/443
+# connections. The proxy needs no home directory or login shell.
+
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin proxyuser
+
 # ─── Copy scripts ─────────────────────────────────────────────────────────────
 
 COPY --chown=root:root --chmod=0755 init-firewall.sh /init-firewall.sh
+COPY --chown=root:root --chmod=0755 init-proxy.sh /init-proxy.sh
 COPY --chown=root:root --chmod=0755 entrypoint.sh /entrypoint.sh
+COPY --from=proxy-builder --chown=root:root --chmod=0755 /build/sandbox-proxy /usr/local/bin/sandbox-proxy
 
 # ─── opencode v1.3.13 ─────────────────────────────────────────────────────────
 # Version-pinned; downloaded over TLS from GitHub releases. Architecture is

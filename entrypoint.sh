@@ -38,6 +38,51 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 		warn "chronyd failed to start — continuing without time synchronization."
 	fi
 
+	# Proxy setup (CA generation, trust store, start proxy, modify iptables)
+	# Normalize PROXY_ENABLED to lowercase for canonical comparison
+	_proxy_enabled=$(echo "${PROXY_ENABLED:-true}" | tr '[:upper:]' '[:lower:]')
+	if [[ "$_proxy_enabled" == "true" ]]; then
+		# Read proxy port (must match init-proxy.sh default)
+		_proxy_port="${PROXY_PORT:-8080}"
+
+		log "Running proxy setup..."
+		/init-proxy.sh
+		log "Proxy established."
+
+		# Modify iptables to force traffic through proxy.
+		# The proxy runs as the 'proxyuser' system user (uid from Containerfile).
+		# Use --uid-owner (not --pid-owner, which was removed in Linux 3.14).
+		log "Redirecting HTTP/HTTPS through proxy..."
+
+		PROXY_UID=$(id -u proxyuser 2>/dev/null) || die "proxyuser system user not found — cannot configure iptables"
+
+		# Remove the existing broad ACCEPT rules for 80/443 installed by init-firewall.sh.
+		# Use || true: the rules may have already been removed.
+		iptables -D OUTPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+		iptables -D OUTPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+
+		# Allow loopback traffic to the proxy port.
+		# NOTE: Rule 1 (-o lo -j ACCEPT) already covers all loopback traffic,
+		# so this is defense-in-depth in case the loopback rule is ever removed.
+		iptables -I OUTPUT 3 -o lo -p tcp --dport "$_proxy_port" -j ACCEPT
+
+		# Allow the proxy user to reach 80/443 upstream (before the catch-all REJECT)
+		iptables -I OUTPUT 4 -p tcp --dport 80 -m owner --uid-owner "$PROXY_UID" -j ACCEPT
+		iptables -I OUTPUT 5 -p tcp --dport 443 -m owner --uid-owner "$PROXY_UID" -j ACCEPT
+
+		# Drop all other direct 80/443 traffic (forces through proxy).
+		# Inserted before the catch-all REJECT so they match first for 80/443.
+		iptables -I OUTPUT 6 -p tcp --dport 80 -j DROP
+		iptables -I OUTPUT 7 -p tcp --dport 443 -j DROP
+
+		log "iptables updated: direct 80/443 blocked, proxy-only access (proxy uid=$PROXY_UID)."
+
+		# Delete CA private key from disk — proxy has already loaded it into memory.
+		rm -f /etc/sandbox-proxy/ca.key
+	else
+		log "Proxy disabled — skipping proxy setup."
+	fi
+
 	# Re-exec as sandbox user; _SANDBOX_PHASE2 prevents infinite loop
 	log "Dropping to sandbox user..."
 	exec gosu sandbox env _SANDBOX_PHASE2=1 "$0"
@@ -132,7 +177,25 @@ else
 	fi
 fi
 
-# ─── Step 5: Exec the agent ───────────────────────────────────────────────────
+# ─── Step 5: Set proxy environment variables ─────────────────────────────────
+
+_proxy_enabled=$(echo "${PROXY_ENABLED:-true}" | tr '[:upper:]' '[:lower:]')
+if [[ "$_proxy_enabled" == "true" ]]; then
+	_proxy_port="${PROXY_PORT:-8080}"
+	export HTTP_PROXY="http://127.0.0.1:${_proxy_port}"
+	export HTTPS_PROXY="http://127.0.0.1:${_proxy_port}"
+	export NO_PROXY="localhost,127.0.0.1"
+	# Node.js (Claude Code) needs the system CA bundle to trust the proxy CA
+	export NODE_EXTRA_CA_CERTS="/etc/ssl/certs/ca-certificates.crt"
+	log "Proxy environment set: HTTP_PROXY=$HTTP_PROXY"
+else
+	log "Proxy disabled — no proxy env vars set."
+fi
+
+# Clean up proxy configuration env vars — the agent does not need them
+unset PROXY_ENABLED PROXY_ALLOW_POST_EXTRA PROXY_EXTRA_CA_CERTS 2>/dev/null || true
+
+# ─── Step 6: Exec the agent ───────────────────────────────────────────────────
 
 cd /workspace || die "/workspace is not accessible — check that the workspace mount succeeded."
 

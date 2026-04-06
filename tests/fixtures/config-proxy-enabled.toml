@@ -1,0 +1,6 @@
+[defaults]
+agent = "opencode"
+
+[proxy]
+enabled = true
+allowed_post_urls = ["api.example.com", "https://custom.api.io"]
