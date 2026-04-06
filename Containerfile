@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chrony \
     nodejs \
     npm \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── chrony configuration ─────────────────────────────────────────────────────
@@ -84,13 +85,92 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash sandbox
 COPY --chown=root:root --chmod=0755 init-firewall.sh /init-firewall.sh
 COPY --chown=root:root --chmod=0755 entrypoint.sh /entrypoint.sh
 
+# ─── Nix configuration (immutable, root-owned) ────────────────────────────────
+# /etc/nix/ is root-owned with mode 0755; files inside are 0444.
+# The sandbox user cannot modify, delete, or create files in this directory.
+# nix.conf is written before the Nix install so the installer picks up settings.
+
+RUN mkdir -p /etc/nix && chmod 0755 /etc/nix && cat > /etc/nix/nix.conf <<'EOF'
+experimental-features = nix-command flakes
+sandbox = false
+warn-dirty = false
+accept-flake-config = false
+substituters = https://cache.nixos.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+EOF
+
+RUN chmod 0444 /etc/nix/nix.conf
+
+# ─── Nix single-user install v2.34.4 ──────────────────────────────────────────
+# Single-user mode (no daemon) — /nix is owned by the sandbox user.
+# The installer auto-detects architecture (amd64/arm64).
+# Placed before ARG NIXPKGS_REV so nixpkgs pin updates don't bust this layer.
+# Version-pinned; Renovate tracks via custom regex manager.
+
+RUN mkdir -p /nix && chown sandbox:sandbox /nix
+
+# HOME is used by Nix install and all subsequent USER sandbox stages.
+ENV HOME=/home/sandbox
+USER sandbox
+
+RUN curl -fsSL https://releases.nixos.org/nix/nix-2.34.4/install | bash -s -- --no-daemon \
+    && /home/sandbox/.nix-profile/bin/nix --version
+
+ENV PATH="/home/sandbox/.nix-profile/bin:${PATH}"
+
+# ─── Shell command-not-found handler ──────────────────────────────────────────
+# When the agent runs an unrecognized command, suggest `nix run nixpkgs#<cmd>`.
+# Works for both OpenCode and Claude Code since both invoke bash.
+
+RUN cat >> /home/sandbox/.bashrc <<'BASHRC'
+
+command_not_found_handle() {
+    printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
+    return 127
+}
+BASHRC
+
+# ─── Nix flake registry (pinned nixpkgs) ──────────────────────────────────────
+# Pins nixpkgs to a specific commit for reproducible binary cache hits.
+# `nix run nixpkgs#<pkg>` resolves to this revision.
+# Written after Nix install so only this layer and chmod are invalidated when
+# Renovate bumps the pin — the expensive Nix install layer is cached.
+
+USER root
+
+# renovate: datasource=git-refs depName=https://github.com/NixOS/nixpkgs.git branch=nixpkgs-unstable
+ARG NIXPKGS_REV="5e11f7acce6c3469bef9df154d78534fa7ae8b6c"
+
+RUN test -n "${NIXPKGS_REV}" || { echo "ERROR: NIXPKGS_REV is empty"; exit 1; }
+
+RUN cat > /etc/nix/registry.json <<EOF
+{
+  "version": 2,
+  "flakes": [
+    {
+      "from": {
+        "type": "indirect",
+        "id": "nixpkgs"
+      },
+      "to": {
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "${NIXPKGS_REV}"
+      }
+    }
+  ]
+}
+EOF
+
+RUN chmod 0444 /etc/nix/registry.json
+
+USER sandbox
+
 # ─── opencode v1.3.13 ─────────────────────────────────────────────────────────
 # Version-pinned; downloaded over TLS from GitHub releases. Architecture is
 # detected at build time via dpkg --print-architecture.
 # opencode db migrate runs at build time to avoid hang on first start.
-
-ENV HOME=/home/sandbox
-USER sandbox
 
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in amd64) OC_ARCH="x64" ;; arm64) OC_ARCH="arm64" ;; *) echo "Unsupported arch: $ARCH" && exit 1 ;; esac \

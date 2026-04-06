@@ -107,10 +107,11 @@ Examples:
 |---|---|
 | bash, curl, git, make, gosu, procps | apt |
 | iptables, iproute2, dnsutils, chrony | apt |
-| jq, ipset, ca-certificates | apt |
+| jq, ipset, ca-certificates, xz-utils | apt |
 | nodejs, npm | apt |
 | `gh` CLI | curl from GitHub releases (version-pinned) |
 | `uv` | copied from `ghcr.io/astral-sh/uv` (pinned digest) |
+| `nix` | single-user install via `releases.nixos.org/nix/nix-X.Y.Z/install` (version-pinned, auto-detects architecture) |
 | `opencode` | curl from GitHub releases (version-pinned) → `~/.opencode/bin/opencode` |
 | `claude-code` | `npm install -g @anthropic-ai/claude-code@X.Y.Z` |
 | `rtk` | curl from GitHub releases (version-pinned) → `/usr/local/bin/rtk` |
@@ -120,6 +121,46 @@ Examples:
 A `sandbox` user is created at UID 1000. The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `gosu` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
 
 **Image tagging:** `agent-sandbox:<sha256-of-Containerfile-contents>`. The launcher computes this hash at startup, checks `podman images` for the tag, and builds automatically if absent. `--build` forces a rebuild unconditionally.
+
+---
+
+## Nix Runtime Package Management
+
+Nix is installed at build time as a single-user installation (no daemon) to give the agent the ability to install and run arbitrary software packages on demand without root access. The `sandbox` user owns `/nix` and can `nix run`, `nix shell`, and `nix build` freely. No Nix daemon runs inside the container.
+
+**PATH integration:** The Nix binary directory (`~/.nix-profile/bin`) is added to `PATH` via a Containerfile `ENV` directive. This ensures `nix` is available in all shell contexts — interactive, non-interactive, and subshells — without relying on shell profile sourcing.
+
+**Immutable configuration:** Nix settings live in `/etc/nix/` (root-owned, mode `0444`):
+
+| File | Purpose |
+|---|---|
+| `/etc/nix/nix.conf` | Enables flakes, disables Nix build sandbox, restricts substituters to `cache.nixos.org` |
+| `/etc/nix/registry.json` | Pins `nixpkgs` to a specific commit for reproducible binary cache hits |
+
+The `sandbox` user cannot modify, delete, or create files in `/etc/nix/`. The user can create `~/.config/nix/nix.conf` to add settings, but cannot override `substituters` (only `extra-substituters` is available at the user level, and there are no trusted substituters configured).
+
+**`nix.conf` contents:**
+
+```ini
+experimental-features = nix-command flakes
+sandbox = false
+warn-dirty = false
+accept-flake-config = false
+substituters = https://cache.nixos.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+```
+
+- `sandbox = false` — Nix's own build sandbox (not the container). Requires root/namespaces, unavailable in single-user mode.
+- `accept-flake-config = false` — prevents flakes from injecting trusted settings via their `nixConfig` attribute.
+- `substituters` — locked to the official binary cache. No third-party caches.
+
+**nixpkgs pinning:** The flake registry pins `nixpkgs` to a specific `nixpkgs-unstable` commit via `ARG NIXPKGS_REV` in the Containerfile. `nix run nixpkgs#<package>` resolves to this revision, ensuring packages are served from the binary cache. Renovate updates the pinned commit automatically.
+
+**Ephemeral store:** The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are lost when the container stops. Each session starts with a clean store containing only the Nix tooling. Binary substitutes from `cache.nixos.org` make re-downloads fast (seconds for most packages).
+
+**Arbitrary flake URIs:** The agent can use any flake URI (e.g., `nix run github:user/repo#thing`). This is intentionally unrestricted — the container boundary is the security layer, and `curl`, `uvx`, and `npx` already allow arbitrary remote code execution.
+
+**Agent awareness:** The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, telling the agent to prefer `nix run`/`nix shell` for tools not on PATH. A `command_not_found_handle` function in `/home/sandbox/.bashrc` provides a reactive fallback — when the agent runs an unrecognized command, the shell suggests `nix run nixpkgs#<cmd>` in the error output.
 
 ---
 
@@ -171,14 +212,15 @@ Runs inside the container in this order:
 
 1. Run `/init-firewall.sh` as root to establish iptables port-based network filter and disable IPv6 — **first**, before any other step
 2. Start `chronyd` as root for time synchronization; if it fails to start, log a warning and continue
-3. Drop to the `sandbox` user via `gosu`; steps 4–8 run as `sandbox`
+3. Drop to the `sandbox` user via `gosu`; steps 4–9 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 5. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-6. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
-7. Based on `$AGENT` env var (set by launcher):
+6. Append Nix usage instructions to `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`; create files if absent
+7. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
+8. Based on `$AGENT` env var (set by launcher):
    - `opencode`: run `rtk init -g --opencode`
    - `claude`: run `rtk init -g`
-8. `exec` the agent binary with `/workspace` as working directory:
+9. `exec` the agent binary with `/workspace` as working directory:
    - `opencode`: `exec ~/.opencode/bin/opencode`
    - `claude`: `exec claude --dangerously-skip-permissions`
 
@@ -434,6 +476,8 @@ For the GHCR-published image (non-Nix distribution path), the version is baked i
 - `rtk` — regex manager matching the version string in the curl URL
 - `uv` — regex manager matching the image tag and digest in the `COPY --from` directive
 - `claude-code` — regex manager matching the npm version string
+- `nix` installer — regex manager matching the version in the releases URL
+- `nixpkgs` commit pin — regex manager tracking `nixpkgs-unstable` branch HEAD via `git-refs` datasource
 
 **Nix** (single PR):
 - `flake.lock` — Renovate's nix manager runs `nix flake update`
@@ -484,6 +528,12 @@ Configured on the repository (not via workflow):
 | Module split | Three modules: NixOS, darwin, Home Manager | NixOS and darwin are system-level (package only); HM is user-level (package + config) matching the per-user nature of the tool |
 | Config generation | `pkgs.formats.toml` via `xdg.configFile` | Standard Nix approach; only writes config when settings differ from defaults |
 | Container runtime option | `containerPackage` with per-platform default | More flexible than a boolean toggle; lets users pass any runtime package or null to self-manage |
+| Nix in-container | Single-user install, no daemon, ephemeral store | Agent can install arbitrary packages on demand without root; no state leaks between sessions |
+| Nix config immutability | `/etc/nix/` root-owned, `0444` files | Agent cannot modify substituters, experimental features, or trust settings |
+| Nix substituters | `cache.nixos.org` only | No third-party binary caches; source builds from arbitrary flakes still allowed |
+| Nix flake URI restrictions | None — arbitrary URIs allowed | Container boundary is the security layer; `curl`/`uvx`/`npx` already allow arbitrary remote code |
+| nixpkgs pinning | Specific commit in `/etc/nix/registry.json`, Renovate-updated | Reproducible default path with binary cache hits; agent can override with explicit rev |
+| Nix PATH integration | `ENV` directive in Containerfile | Works for non-interactive shells; explicit over shell profile sourcing |
 
 ---
 

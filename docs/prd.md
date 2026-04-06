@@ -81,6 +81,8 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Nix configuration (`/etc/nix/nix.conf`) and the flake registry (`/etc/nix/registry.json`) are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 - The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are not persisted across container restarts. Each session starts with a clean store containing only the Nix tooling itself.
 - The Nix installation works on both amd64 and arm64 architectures without architecture-specific build steps.
+- The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH.
+- A shell `command_not_found_handle` in `/home/sandbox/.bashrc` suggests `nix run nixpkgs#<cmd>` when an unrecognized command is executed, providing a reactive fallback hint for both agents.
 
 ### Image Management
 
@@ -161,6 +163,9 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - The Nix flake registry resolves `nixpkgs` to the pinned revision.
 - `/etc/nix/nix.conf` and `/etc/nix/registry.json` are owned by root and not writable by the sandbox user.
 - The Nix binary cache is configured to `cache.nixos.org` only.
+- Running a nonexistent command in the sandbox shell outputs a `nix run nixpkgs#` suggestion via `command_not_found_handle`.
+- The entrypoint appends Nix usage instructions to `~/.config/opencode/AGENTS.md` for OpenCode sessions.
+- The entrypoint appends Nix usage instructions to `~/.claude/CLAUDE.md` for Claude Code sessions.
 
 #### End-to-End Tests
 - Invoking `agent-sandbox.sh` with a temporary workspace directory starts a container and the fake agent runs to completion.

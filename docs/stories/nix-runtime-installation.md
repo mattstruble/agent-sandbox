@@ -34,6 +34,13 @@ Adds a single-user Nix installation to the container image at build time. The Ni
 - [ ] `nix` is added to the existing binary-existence integration test (`nix` is executable inside the image).
 - [ ] A new integration test verifies `nix run nixpkgs#hello` completes successfully as the `sandbox` user.
 
+### Agent awareness
+- [ ] `entrypoint.sh` appends a Nix usage section to `~/.config/opencode/AGENTS.md` after config staging.
+- [ ] `entrypoint.sh` appends a Nix usage section to `~/.claude/CLAUDE.md` after config staging.
+- [ ] The append creates the file if it does not exist and preserves existing content if it does.
+- [ ] `/home/sandbox/.bashrc` contains a `command_not_found_handle` function that suggests `nix run nixpkgs#<cmd>`.
+- [ ] Running a nonexistent command in an interactive bash shell outputs a message containing `nix run nixpkgs#`.
+
 ## Open Questions
 - None.
 

@@ -95,6 +95,152 @@ teardown() {
     assert_success
 }
 
+# bats test_tags=integration
+@test "image: nix binary exists and is executable" {
+    # Nix is installed via ENV PATH directive, so `which` should find it.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint which "$IMAGE" nix
+    assert_success
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 1b: Nix Runtime Package Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+# bats test_tags=integration
+@test "nix: nix --version succeeds as sandbox user" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint nix "$IMAGE" --version
+    assert_success
+    assert_output --partial "nix"
+}
+
+# bats test_tags=integration
+@test "nix: nix run nixpkgs#hello succeeds" {
+    # Validates the full download-from-binary-cache → execute path.
+    # Requires network access to cache.nixos.org.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix run nixpkgs#hello'
+    assert_success
+    assert_output --partial "Hello, world!"
+}
+
+# bats test_tags=integration
+@test "nix: /etc/nix/nix.conf is root-owned and read-only" {
+    run "$RUNTIME" run --rm --entrypoint stat "$IMAGE" -c '%U %a' /etc/nix/nix.conf
+    assert_success
+    assert_output "root 444"
+}
+
+# bats test_tags=integration
+@test "nix: /etc/nix/registry.json is root-owned and read-only" {
+    run "$RUNTIME" run --rm --entrypoint stat "$IMAGE" -c '%U %a' /etc/nix/registry.json
+    assert_success
+    assert_output "root 444"
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot write to /etc/nix/nix.conf" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'echo test >> /etc/nix/nix.conf'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot write to /etc/nix/registry.json" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'echo test >> /etc/nix/registry.json'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot create files in /etc/nix/" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'touch /etc/nix/evil.conf'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: substituters is cache.nixos.org only" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix show-config 2>/dev/null | grep "^substituters ="'
+    assert_success
+    # Nix normalizes URLs with trailing slash; match either form
+    assert_output --regexp "^substituters = https://cache\.nixos\.org/?$"
+}
+
+# bats test_tags=integration
+@test "nix: registry contains pinned nixpkgs" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix registry list 2>/dev/null'
+    assert_success
+    assert_output --partial "flake:nixpkgs"
+    assert_output --partial "github:NixOS/nixpkgs/"
+}
+
+# bats test_tags=integration
+@test "nix: command_not_found_handle suggests nix run" {
+    # Run a nonexistent command in an interactive bash shell to trigger the handler.
+    # The handler is defined in .bashrc, which bash only sources for interactive shells.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -ic 'nonexistent_tool_xyz 2>&1; true'
+    assert_output --partial "nix run nixpkgs#nonexistent_tool_xyz"
+}
+
+# bats test_tags=integration
+@test "nix: entrypoint appends Nix instructions to AGENTS.md" {
+    # Run the entrypoint with a fake agent that checks AGENTS.md content.
+    _TEST_WORKSPACE="$(make_tempdir)"
+    _TEST_AGENT="$(make_temp)"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'grep -q "Runtime Package Management" ~/.config/opencode/AGENTS.md' \
+        > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        "$IMAGE"
+    assert_success
+}
+
+# bats test_tags=integration
+@test "nix: entrypoint appends Nix instructions to CLAUDE.md" {
+    # Run the entrypoint with a fake agent that checks CLAUDE.md content.
+    _TEST_WORKSPACE="$(make_tempdir)"
+    _TEST_AGENT="$(make_temp)"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'grep -q "Runtime Package Management" ~/.claude/CLAUDE.md' \
+        > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=claude \
+        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        -v "${_TEST_AGENT}:/usr/local/bin/claude:ro" \
+        "$IMAGE"
+    assert_success
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 2: User Setup
 # ─────────────────────────────────────────────────────────────────────────────

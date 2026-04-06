@@ -74,6 +74,28 @@
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "anomalyco/opencode",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "description": "Pinned nixpkgs commit hash in Nix flake registry",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "# renovate: datasource=git-refs depName=https://github\\.com/NixOS/nixpkgs\\.git branch=nixpkgs-unstable\\nARG NIXPKGS_REV=\"(?<currentDigest>[a-f0-9]+)\""
+      ],
+      "currentValueTemplate": "nixpkgs-unstable",
+      "datasourceTemplate": "git-refs",
+      "depNameTemplate": "https://github.com/NixOS/nixpkgs.git",
+      "packageNameTemplate": "https://github.com/NixOS/nixpkgs.git"
+    },
+    {
+      "description": "Nix installer version",
+      "customType": "regex",
+      "fileMatch": ["(^|/)Containerfile$"],
+      "matchStrings": [
+        "releases\\.nixos\\.org/nix/nix-(?<currentValue>[\\d.]+)/install"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "NixOS/nix"
     }
   ],
   "packageRules": [
