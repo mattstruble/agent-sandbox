@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "FAKE_AGENT_MARKER: agent-sandbox-test-sentinel"
+exit 0
