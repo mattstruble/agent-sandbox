@@ -17,6 +17,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - As a maintainer, I want automated semver releases driven by conventional commits, so that versioning is consistent and changelogs are generated automatically.
 - As a maintainer, I want PRs to be linted, scanned, and validated before merge, so that broken or insecure changes don't reach main.
 - As a maintainer, I want dependency update PRs opened automatically, so that pinned versions stay current without manual tracking.
+- As a developer, I want the agent to install and run arbitrary software packages on demand inside the sandbox, so that I don't need to pre-install every tool the agent might need or rebuild the container image when a new tool is required.
 - As a developer without Nix, I want to install agent-sandbox with a single curl command on macOS, Linux, or WSL2, so that I can use the tool without adopting Nix.
 - As a NixOS, nix-darwin, or Home Manager user, I want to enable agent-sandbox declaratively in my Nix configuration and manage its settings through Nix options, so that the tool integrates with my existing system management workflow.
 
@@ -67,6 +68,19 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 - `rtk` is pre-installed and configured for the active agent at the start of every session, with no user setup required.
 - Shell commands (git, cargo, cat, ls, grep, and others) are transparently rewritten to `rtk` equivalents inside the container, reducing token consumption by 60–90%.
+
+### Runtime Package Management
+
+- Nix is pre-installed inside the container at build time as a single-user installation (no daemon) so the agent can install and run arbitrary software packages on demand without root access.
+- The agent can run any package from nixpkgs via `nix run nixpkgs#<package>` or enter a shell with packages via `nix shell nixpkgs#<package>`.
+- The agent can run packages from arbitrary flake URIs (e.g., `nix run github:user/repo#thing`); there is no restriction on which flake sources the agent can use.
+- The `nix` command is available on `PATH` for all shell sessions (interactive and non-interactive) via a container-level `ENV` directive, not via shell profile sourcing.
+- A specific nixpkgs revision is pinned in the Nix flake registry at build time. `nix run nixpkgs#<package>` resolves to this pinned revision, ensuring binary cache hits and reproducible default behavior.
+- The pinned nixpkgs revision is updated automatically via Renovate alongside other container dependencies.
+- Binary substitutes (pre-built packages) are downloaded only from the official Nix binary cache (`cache.nixos.org`). Third-party binary caches are not trusted.
+- Nix configuration (`/etc/nix/nix.conf`) and the flake registry (`/etc/nix/registry.json`) are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
+- The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are not persisted across container restarts. Each session starts with a clean store containing only the Nix tooling itself.
+- The Nix installation works on both amd64 and arm64 architectures without architecture-specific build steps.
 
 ### Image Management
 
@@ -133,7 +147,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Self-update version comparison logic is testable.
 
 #### Container Integration Tests
-- Expected binaries (`opencode`, `claude`, `rtk`, `gh`, `uv`, `node`, `git`) exist and are executable inside the built image.
+- Expected binaries (`opencode`, `claude`, `rtk`, `gh`, `uv`, `node`, `git`, `nix`) exist and are executable inside the built image.
 - The `sandbox` user exists with UID 1000 and correct permissions.
 - Firewall allows outbound TCP 80 and 443.
 - Firewall allows outbound UDP 123 (NTP) to pinned Cloudflare IPs only; NTP to non-pinned IPs is rejected.
@@ -143,6 +157,10 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - The entrypoint drops to the `sandbox` user after the root setup phase.
 - Staged host configs (git config, SSH socket, API keys) land at expected paths inside the container and are readable by the `sandbox` user.
 - A fake agent binary mounted over the real agent binary is executed by the entrypoint without production code changes.
+- `nix run nixpkgs#hello` executes successfully inside the container as the sandbox user.
+- The Nix flake registry resolves `nixpkgs` to the pinned revision.
+- `/etc/nix/nix.conf` and `/etc/nix/registry.json` are owned by root and not writable by the sandbox user.
+- The Nix binary cache is configured to `cache.nixos.org` only.
 
 #### End-to-End Tests
 - Invoking `agent-sandbox.sh` with a temporary workspace directory starts a container and the fake agent runs to completion.
@@ -183,7 +201,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 ### Dependency Management
 
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code) are grouped into a single PR.
+- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code, nixpkgs revision) are grouped into a single PR.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
 - Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.
@@ -196,7 +214,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ## Out of Scope
 
-- Multi-architecture container images (amd64 only).
+- Nix store persistence across sessions — packages are re-downloaded each session; shared caches or volumes are not supported.
 - Per-project config files — configuration is user-global (`~/.config/agent-sandbox/config.toml`) only.
 - Support for agents other than OpenCode and Claude Code.
 - Native Windows support (PowerShell/cmd.exe). Windows is supported via WSL2 only.
