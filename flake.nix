@@ -34,10 +34,14 @@
           lib = pkgs.lib;
           version = "0.1.0";
 
-          # nixpkgs instance with unfree allowed — used for pre-built binaries
-          # (opencode, rtk, claude-code) that have proprietary licenses.
-          pkgsUnfree = import nixpkgs {
-            inherit system;
+          # Linux nixpkgs instance — used for all container image contents.
+          # On Linux, linuxSystem == system but pkgsLinux is a separate import
+          # with allowUnfree = true (pkgs does not enable unfree). On darwin it
+          # also targets the corresponding Linux arch so the build is delegated
+          # to a Linux builder.
+          linuxSystem = builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
+          pkgsLinux = import nixpkgs {
+            system = linuxSystem;
             config.allowUnfree = true;
           };
 
@@ -79,7 +83,8 @@
           nixpkgsRev = inputs.nixpkgs.rev;
 
           # Flake registry JSON pinning nixpkgs to the locked revision.
-          flakeRegistry = pkgs.writeText "registry.json" (
+          # Built via pkgsLinux so the store path lives in the Linux builder's domain.
+          flakeRegistry = pkgsLinux.writeText "registry.json" (
             builtins.toJSON {
               version = 2;
               flakes = [
@@ -99,47 +104,9 @@
             }
           );
 
-          # claude-code installed via npm — version-pinned for reproducibility.
-          # Uses a fixed-output derivation so Nix can fetch from the npm registry
-          # during build (fixed-output derivations are allowed network access).
-          # renovate: datasource=npm depName=@anthropic-ai/claude-code
-          claudeCodeVersion = "2.1.87";
-          claudeCode = pkgsUnfree.stdenv.mkDerivation {
-            pname = "claude-code";
-            version = claudeCodeVersion;
-
-            dontUnpack = true;
-
-            nativeBuildInputs = [ pkgsUnfree.nodejs ];
-
-            buildPhase = ''
-              export HOME=$(mktemp -d)
-              export npm_config_cache=$(mktemp -d)
-              mkdir -p $out
-              timeout 180 ${pkgsUnfree.nodejs}/bin/npm install -g \
-                --ignore-scripts \
-                --prefix $out \
-                @anthropic-ai/claude-code@${claudeCodeVersion}
-            '';
-
-            installPhase = "true";
-
-            # Fixed-output hash allows network access during build.
-            # Run `nix build .#container-image` to obtain the correct hash.
-            outputHash = lib.fakeHash;
-            outputHashAlgo = "sha256";
-            outputHashMode = "recursive";
-
-            meta = {
-              description = "Claude Code AI coding agent by Anthropic";
-              homepage = "https://www.npmjs.com/package/@anthropic-ai/claude-code";
-              license = lib.licenses.unfree;
-              platforms = lib.platforms.linux;
-            };
-          };
-
-          # Static files bundled into the image at /etc/agent-sandbox/
-          nixInstructionsFile = pkgs.writeText "nix-instructions.md" ''
+          # Static files bundled into the image at /etc/agent-sandbox/.
+          # Built via pkgsLinux so they resolve correctly inside the Linux builder.
+          nixInstructionsFile = pkgsLinux.writeText "nix-instructions.md" ''
             # Runtime Package Management
 
             This environment has Nix installed. When you need a tool that is not on
@@ -149,7 +116,7 @@
             apt-get (which requires root you do not have).
           '';
 
-          opencodePermissionsFile = pkgs.writeText "opencode-permissions.json" ''
+          opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" ''
             {
               "permission": {
                 "bash": "allow",
@@ -161,150 +128,150 @@
             }
           '';
 
-          # Linux-only packages (pre-built binaries only available for Linux)
-          linuxPackages = lib.optionalAttrs pkgs.stdenv.isLinux (
-            let
-              opencode = pkgsUnfree.callPackage ./packages/opencode.nix { };
-              rtk = pkgsUnfree.callPackage ./packages/rtk.nix { };
-            in
-            {
-              inherit opencode rtk;
+          # Container image contents — built entirely via pkgsLinux so the
+          # derivation targets Linux regardless of the host system.
+          # Defined before linuxPackages so linuxPackages can reference them
+          # directly rather than calling callPackage a second time.
+          opencode = pkgsLinux.callPackage ./packages/opencode.nix { };
+          rtk = pkgsLinux.callPackage ./packages/rtk.nix { };
 
-              container-image = pkgsUnfree.dockerTools.buildLayeredImage {
-                name = "agent-sandbox";
-                tag = version;
+          # Linux-only packages exposed as top-level outputs on Linux systems.
+          # References the standalone opencode/rtk bindings above so both the
+          # image contents and the top-level outputs share the same derivation.
+          linuxPackages = lib.optionalAttrs pkgs.stdenv.isLinux { inherit opencode rtk; };
 
-                contents = [
-                  pkgsUnfree.bash
-                  pkgsUnfree.curl
-                  pkgsUnfree.git
-                  pkgsUnfree.gnumake
-                  pkgsUnfree.su-exec
-                  pkgsUnfree.procps
-                  pkgsUnfree.findutils
-                  pkgsUnfree.coreutils
-                  pkgsUnfree.iptables
-                  pkgsUnfree.ipset
-                  pkgsUnfree.iproute2
-                  pkgsUnfree.bind.dnsutils
-                  pkgsUnfree.jq
-                  pkgsUnfree.cacert
-                  pkgsUnfree.xz
-                  pkgsUnfree.chrony
-                  pkgsUnfree.nodejs
-                  pkgsUnfree.gh
-                  pkgsUnfree.uv
-                  pkgsUnfree.nix
-                  opencode
-                  rtk
-                  claudeCode
-                  pkgsUnfree.dockerTools.caCertificates
-                  pkgsUnfree.dockerTools.usrBinEnv
-                ];
+          containerImage = pkgsLinux.dockerTools.buildLayeredImage {
+            name = "agent-sandbox";
+            tag = version;
 
-                fakeRootCommands = ''
-                  # ── User/group database ──────────────────────────────────────────────
-                  mkdir -p etc
-                  printf 'root:x:0:0:root:/root:/bin/sh\nsandbox:x:1000:1000:sandbox:/home/sandbox:/bin/bash\n' \
-                    > etc/passwd
-                  printf 'root:x:0:\nsandbox:x:1000:\n' \
-                    > etc/group
-                  printf 'root:!:19000:0:99999:7:::\nsandbox:!:19000:0:99999:7:::\n' \
-                    > etc/shadow
-                  chmod 0640 etc/shadow
+            contents = [
+              pkgsLinux.bash
+              pkgsLinux.curl
+              pkgsLinux.git
+              pkgsLinux.gnumake
+              pkgsLinux.su-exec
+              pkgsLinux.procps
+              pkgsLinux.findutils
+              pkgsLinux.coreutils
+              pkgsLinux.iptables
+              pkgsLinux.ipset
+              pkgsLinux.iproute2
+              pkgsLinux.bind.dnsutils
+              pkgsLinux.jq
+              pkgsLinux.cacert
+              pkgsLinux.xz
+              pkgsLinux.chrony
+              pkgsLinux.nodejs
+              pkgsLinux.gh
+              pkgsLinux.uv
+              pkgsLinux.nix
+              opencode
+              rtk
+              pkgsLinux.dockerTools.caCertificates
+              pkgsLinux.dockerTools.usrBinEnv
+            ];
 
-                  # ── Home directory ───────────────────────────────────────────────────
-                  mkdir -p home/sandbox
-                  chown 1000:1000 home/sandbox
+            fakeRootCommands = ''
+              # ── User/group database ──────────────────────────────────────────────
+              mkdir -p etc
+              printf 'root:x:0:0:root:/root:/bin/sh\nsandbox:x:1000:1000:sandbox:/home/sandbox:/bin/bash\n' \
+                > etc/passwd
+              printf 'root:x:0:\nsandbox:x:1000:\n' \
+                > etc/group
+              printf 'root:!:19000:0:99999:7:::\nsandbox:!:19000:0:99999:7:::\n' \
+                > etc/shadow
+              chmod 0640 etc/shadow
 
-                  # ── /nix owned by sandbox user ───────────────────────────────────────
-                  mkdir -p nix
-                  chown 1000:1000 nix
+              # ── Home directory ───────────────────────────────────────────────────
+              mkdir -p home/sandbox
+              chown 1000:1000 home/sandbox
 
-                  # ── /workspace working directory ─────────────────────────────────────
-                  mkdir -p workspace
-                  chown 1000:1000 workspace
+              # ── /nix owned by sandbox user ───────────────────────────────────────
+              mkdir -p nix
+              chown 1000:1000 nix
 
-                  # ── Nix configuration ────────────────────────────────────────────────
-                  mkdir -p etc/nix
-                  chmod 0755 etc/nix
-                  cat > etc/nix/nix.conf <<'NIXCONF'
-                  experimental-features = nix-command flakes
-                  sandbox = false
-                  warn-dirty = false
-                  accept-flake-config = false
-                  substituters = https://cache.nixos.org
-                  trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-                  NIXCONF
-                  chmod 0444 etc/nix/nix.conf
+              # ── /workspace working directory ─────────────────────────────────────
+              mkdir -p workspace
+              chown 1000:1000 workspace
 
-                  # ── Flake registry (pinned nixpkgs) ──────────────────────────────────
-                  cp ${flakeRegistry} etc/nix/registry.json
-                  chmod 0444 etc/nix/registry.json
+              # ── Nix configuration ────────────────────────────────────────────────
+              mkdir -p etc/nix
+              chmod 0755 etc/nix
+              cat > etc/nix/nix.conf <<'NIXCONF'
+              experimental-features = nix-command flakes
+              sandbox = false
+              warn-dirty = false
+              accept-flake-config = false
+              substituters = https://cache.nixos.org
+              trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+              NIXCONF
+              chmod 0444 etc/nix/nix.conf
 
-                  # ── Chrony configuration ─────────────────────────────────────────────
-                  mkdir -p etc/chrony
-                  cat > etc/chrony/chrony.conf <<'CHRONYCONF'
-                  server 162.159.200.1 iburst
-                  server 162.159.200.123 iburst
-                  makestep 1 3
-                  port 0
-                  cmdport 0
-                  driftfile /var/lib/chrony/drift
-                  CHRONYCONF
+              # ── Flake registry (pinned nixpkgs) ──────────────────────────────────
+              cp ${flakeRegistry} etc/nix/registry.json
+              chmod 0444 etc/nix/registry.json
 
-                  # ── Static agent-sandbox files ───────────────────────────────────────
-                  mkdir -p etc/agent-sandbox
-                  cp ${nixInstructionsFile} etc/agent-sandbox/nix-instructions.md
-                  cp ${opencodePermissionsFile} etc/agent-sandbox/opencode-permissions.json
-                  chmod 0444 etc/agent-sandbox/nix-instructions.md
-                  chmod 0444 etc/agent-sandbox/opencode-permissions.json
+              # ── Chrony configuration ─────────────────────────────────────────────
+              mkdir -p etc/chrony
+              cat > etc/chrony/chrony.conf <<'CHRONYCONF'
+              server 162.159.200.1 iburst
+              server 162.159.200.123 iburst
+              makestep 1 3
+              port 0
+              cmdport 0
+              driftfile /var/lib/chrony/drift
+              CHRONYCONF
 
-                  # ── bashrc with command-not-found handler ────────────────────────────
-                  cat > home/sandbox/.bashrc <<'BASHRC'
-                  command_not_found_handle() {
-                      printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
-                      return 127
-                  }
-                  BASHRC
-                  chown 1000:1000 home/sandbox/.bashrc
+              # ── Static agent-sandbox files ───────────────────────────────────────
+              mkdir -p etc/agent-sandbox
+              cp ${nixInstructionsFile} etc/agent-sandbox/nix-instructions.md
+              cp ${opencodePermissionsFile} etc/agent-sandbox/opencode-permissions.json
+              chmod 0444 etc/agent-sandbox/nix-instructions.md
+              chmod 0444 etc/agent-sandbox/opencode-permissions.json
 
-                  # ── Entrypoint and firewall scripts ──────────────────────────────────
-                  cp ${./entrypoint.sh} entrypoint.sh
-                  chmod 0755 entrypoint.sh
-                  cp ${./init-firewall.sh} init-firewall.sh
-                  chmod 0755 init-firewall.sh
+              # ── bashrc with command-not-found handler ────────────────────────────
+              cat > home/sandbox/.bashrc <<'BASHRC'
+              command_not_found_handle() {
+                  printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
+                  return 127
+              }
+              BASHRC
+              chown 1000:1000 home/sandbox/.bashrc
 
-                  # ── Runtime var directories ──────────────────────────────────────────
-                  mkdir -p var/lib/chrony
-                  chown 1000:1000 var/lib/chrony
-                  mkdir -p tmp
-                  chmod 1777 tmp
-                '';
+              # ── Entrypoint and firewall scripts ──────────────────────────────────
+              cp ${./entrypoint.sh} entrypoint.sh
+              chmod 0755 entrypoint.sh
+              cp ${./init-firewall.sh} init-firewall.sh
+              chmod 0755 init-firewall.sh
 
-                enableFakechroot = true;
+              # ── Runtime var directories ──────────────────────────────────────────
+              mkdir -p var/lib/chrony
+              chown 1000:1000 var/lib/chrony
+              mkdir -p tmp
+              chmod 1777 tmp
+            '';
 
-                config = {
-                  Entrypoint = [ "/entrypoint.sh" ];
-                  WorkingDir = "/workspace";
-                  Env = [
-                    "PATH=/home/sandbox/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                    "SSL_CERT_FILE=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
-                    "GIT_SSL_CAINFO=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
-                    "NIX_SSL_CERT_FILE=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
-                    "RTK_TELEMETRY_DISABLED=1"
-                    "HOME=/home/sandbox"
-                    "NIX_CONF_DIR=/etc/nix"
-                  ];
-                  Labels = {
-                    "org.opencontainers.image.title" = "agent-sandbox";
-                    "org.opencontainers.image.source" = "https://github.com/mstruble/agent-sandbox";
-                    "org.opencontainers.image.description" = "Sandboxed AI coding agent environment";
-                  };
-                };
+            enableFakechroot = true;
+
+            config = {
+              Entrypoint = [ "/entrypoint.sh" ];
+              WorkingDir = "/workspace";
+              Env = [
+                "PATH=/home/sandbox/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                "SSL_CERT_FILE=${pkgsLinux.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "GIT_SSL_CAINFO=${pkgsLinux.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=${pkgsLinux.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "RTK_TELEMETRY_DISABLED=1"
+                "HOME=/home/sandbox"
+                "NIX_CONF_DIR=/etc/nix"
+              ];
+              Labels = {
+                "org.opencontainers.image.title" = "agent-sandbox";
+                "org.opencontainers.image.source" = "https://github.com/mstruble/agent-sandbox";
+                "org.opencontainers.image.description" = "Sandboxed AI coding agent environment";
               };
-            }
-          );
+            };
+          };
 
         in
         {
@@ -378,8 +345,10 @@
                 mainProgram = "agent-sandbox";
               };
             };
+
+            container-image = containerImage;
           }
-          // linuxPackages;
+          // linuxPackages; # adds opencode and rtk on Linux systems
 
           apps.default = {
             type = "app";

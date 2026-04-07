@@ -12,12 +12,12 @@ let
     if stdenv.hostPlatform.system == "x86_64-linux" then
       fetchurl {
         url = "https://github.com/rtk-ai/rtk/releases/download/v${version}/rtk-x86_64-unknown-linux-musl.tar.gz";
-        sha256 = lib.fakeHash;
+        sha256 = "sha256-QZs4IWyLEknMcjhtS7z+nngIveCvYxWcgmQ42lNPnlk=";
       }
     else if stdenv.hostPlatform.system == "aarch64-linux" then
       fetchurl {
-        url = "https://github.com/rtk-ai/rtk/releases/download/v${version}/rtk-aarch64-unknown-linux-musl.tar.gz";
-        sha256 = lib.fakeHash;
+        url = "https://github.com/rtk-ai/rtk/releases/download/v${version}/rtk-aarch64-unknown-linux-gnu.tar.gz";
+        sha256 = "sha256-/BaGNc9lcV2uXLTxHNdgRLTIJHAtUMMoBwt4qzH7bFE=";
       }
     else
       throw "rtk: unsupported platform ${stdenv.hostPlatform.system}";
