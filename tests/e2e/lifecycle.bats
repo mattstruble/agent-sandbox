@@ -23,14 +23,15 @@ setup() {
 	# Skip if no container runtime is available
 	RUNTIME=$(runtime_name) || skip "No container runtime found (install docker or podman)"
 
-	# Skip if sha256sum is not available: compute_containerfile_hash() in the
-	# launcher uses sha256sum directly without a shasum fallback. On macOS
-	# systems without sha256sum in PATH, _run_sandbox would fail at runtime.
-	command -v sha256sum &>/dev/null || skip "sha256sum not found — required by agent-sandbox.sh:compute_containerfile_hash"
+	# Set AGENT_SANDBOX_VERSION before sourcing the launcher so VERSION is
+	# consistent between the image existence check and _run_sandbox's IMAGE_TAG.
+	# The Makefile passes AGENT_SANDBOX_VERSION=$(VERSION) when invoking bats;
+	# fall back to 0.1.0 for direct bats invocations.
+	export AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-0.1.0}"
 
 	# Verify the image exists — skip rather than build (build is slow and
 	# belongs to CI setup, not individual test setup)
-	IMAGE=$(compute_image_tag) || skip "Cannot compute image tag"
+	IMAGE="agent-sandbox:${AGENT_SANDBOX_VERSION}"
 	if ! "$RUNTIME" images -q "$IMAGE" 2>/dev/null | grep -q .; then
 		skip "Image $IMAGE not found — run 'make ensure-image' first"
 	fi
@@ -51,7 +52,7 @@ GITCFG
 	# Source the launcher to get all its functions available in this shell.
 	# The entry-point guard (BASH_SOURCE[0] == $0) prevents main() from running.
 	export AGENT_SANDBOX_SHARE_DIR="${REPO_ROOT}"
-	export AGENT_SANDBOX_VERSION="0.1.0-test"
+	# AGENT_SANDBOX_VERSION is already set above — do not override here.
 	export HOME="${TEST_HOME}"
 	# Force the detected runtime for tests to avoid Podman macOS virtiofs SSH warnings
 	export AGENT_SANDBOX_RUNTIME="${RUNTIME}"
@@ -154,26 +155,26 @@ _run_sandbox() {
 	log "  Agent:     $OPT_AGENT"
 	log "  Workspace: $WORKSPACE"
 
-	# Ensure image exists (already checked in setup, but guard here too.
-	# NOTE: compute_containerfile_hash() in agent-sandbox.sh uses sha256sum
-	# directly without a shasum fallback. On macOS systems where sha256sum is
-	# not in PATH, this will fail. This is a known limitation of the production
-	# code; the tests cannot fix it without modifying agent-sandbox.sh.
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+	# Use version-based image tag
+	IMAGE_TAG="agent-sandbox:${VERSION}"
 
 	# Assemble mounts and env vars using the real launcher functions
 	assemble_mount_flags
 	assemble_env_flags
 
 	# Inject the fake agent over the real agent binary.
-	# opencode lives at ~/.opencode/bin/opencode inside the container.
-	# claude lives at /usr/local/bin/claude (npm global install on Debian).
+	# Determine the agent binary path dynamically from the image.
 	local agent_bin
 	if [[ "$OPT_AGENT" == "opencode" ]]; then
-		agent_bin="/home/sandbox/.opencode/bin/opencode"
+		agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" opencode 2>/dev/null || true)
+		if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
+			skip "opencode binary path could not be determined in image $IMAGE_TAG"
+		fi
 	else
-		agent_bin="/usr/local/bin/claude"
+		agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" claude 2>/dev/null || true)
+		if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
+			skip "claude binary path could not be determined in image $IMAGE_TAG"
+		fi
 	fi
 	MOUNT_FLAGS+=("-v" "${FAKE_AGENT}:${agent_bin}:ro${MOUNT_Z}")
 
@@ -589,7 +590,7 @@ AGENT
 
 	# Build the run command manually for the claude agent: _run_sandbox injects
 	# the fake agent at the opencode path by default; for claude we need the
-	# claude binary path (/usr/local/bin/claude via npm global install).
+	# claude binary path (determined dynamically from the image).
 	parse_args --no-ssh --agent claude "$WORKSPACE_DIR"
 	parse_config
 	apply_config_defaults
@@ -603,14 +604,21 @@ AGENT
 	WORKSPACE=$(resolve_workspace "${OPT_WORKSPACE}")
 	CONTAINER_NAME=$(compute_container_name "$OPT_AGENT" "$WORKSPACE")
 
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+	IMAGE_TAG="agent-sandbox:${VERSION}"
+
+	# Determine claude binary path dynamically from the image — do this before
+	# assemble_mount_flags to skip early if the path cannot be determined.
+	local claude_path
+	claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" claude 2>/dev/null || true)
+	if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
+		skip "claude binary path could not be determined"
+	fi
 
 	assemble_mount_flags
 	assemble_env_flags
 
 	# Inject fake agent at the claude binary path
-	MOUNT_FLAGS+=("-v" "${verify_agent}:/usr/local/bin/claude:ro${MOUNT_Z}")
+	MOUNT_FLAGS+=("-v" "${verify_agent}:${claude_path}:ro${MOUNT_Z}")
 
 	local cmd=(
 		run --rm -i

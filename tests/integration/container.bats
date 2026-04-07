@@ -19,11 +19,12 @@
 setup() {
     load '../test_helper'
     RUNTIME=$(runtime_name) || skip "No container runtime found"
-    IMAGE=$(compute_image_tag) || skip "Could not compute image tag — Containerfile missing or no sha256 tool"
+    export AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-0.1.0}"
+    IMAGE="agent-sandbox:${AGENT_SANDBOX_VERSION}"
 
     # Verify the image exists; skip rather than fail if not built yet.
     if ! "$RUNTIME" images -q "$IMAGE" 2>/dev/null | grep -q .; then
-        skip "Image $IMAGE not found — run 'make ensure-image' first"
+        skip "Image $IMAGE not found — build via 'nix build .#container-image' and load, or run 'make ensure-image'"
     fi
 
     # Use BATS_TEST_TMPDIR for all temp files so bats auto-cleans on test exit,
@@ -53,9 +54,8 @@ teardown() {
 
 # bats test_tags=integration
 @test "image: opencode binary exists and is executable" {
-    # opencode is NOT on PATH — it lives at /home/sandbox/.opencode/bin/opencode.
-    # The entrypoint uses the full path; `which opencode` would fail.
-    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -x /home/sandbox/.opencode/bin/opencode
+    # In the Nix image, opencode is on PATH (installed to the Nix store).
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode
     assert_success
 }
 
@@ -92,6 +92,12 @@ teardown() {
 # bats test_tags=integration
 @test "image: git binary exists and is executable" {
     run "$RUNTIME" run --rm --entrypoint which "$IMAGE" git
+    assert_success
+}
+
+# bats test_tags=integration
+@test "image: su-exec binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" su-exec
     assert_success
 }
 
@@ -196,6 +202,13 @@ teardown() {
         > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -208,7 +221,7 @@ teardown() {
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
         -v "${_TEST_WORKSPACE}:/workspace:rw" \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         "$IMAGE"
     assert_success
 }
@@ -224,6 +237,13 @@ teardown() {
         > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine claude binary path inside the image
+    local claude_path
+    claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" claude 2>/dev/null || true)
+    if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
+        skip "claude binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -236,8 +256,24 @@ teardown() {
         --security-opt=no-new-privileges \
         -e AGENT=claude \
         -v "${_TEST_WORKSPACE}:/workspace:rw" \
-        -v "${_TEST_AGENT}:/usr/local/bin/claude:ro" \
+        -v "${_TEST_AGENT}:${claude_path}:ro" \
         "$IMAGE"
+    assert_success
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 1c: Static Files
+# ─────────────────────────────────────────────────────────────────────────────
+
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/nix-instructions.md exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/nix-instructions.md
+    assert_success
+}
+
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/opencode-permissions.json exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-permissions.json
     assert_success
 }
 
@@ -429,9 +465,9 @@ teardown() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # bats test_tags=integration
-@test "entrypoint: drops to sandbox user before executing agent" {
+@test "entrypoint: drops to sandbox user before executing agent (su-exec)" {
     # Mount the fake agent over the real opencode binary.
-    # The entrypoint starts as root, sets up the firewall, then re-execs as sandbox.
+    # The entrypoint starts as root, sets up the firewall, then re-execs as sandbox via su-exec.
     # We verify the user drop by having the fake agent print its effective username.
     _TEST_WORKSPACE=$(make_tempdir)
     _TEST_AGENT=$(make_temp)
@@ -442,6 +478,13 @@ teardown() {
         'echo "RUNNING_AS_USER=$(id -un)"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
 
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
@@ -454,7 +497,7 @@ teardown() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
@@ -512,6 +555,13 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -523,7 +573,7 @@ teardown() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
@@ -618,6 +668,13 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -630,7 +687,7 @@ teardown() {
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
         -e TEST_INTEGRATION_VAR=hello-from-host \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
@@ -653,6 +710,13 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -664,7 +728,7 @@ teardown() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"

@@ -48,14 +48,6 @@ runtime_name() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: compute_image_tag
-# ---------------------------------------------------------------------------
-# Computes the image tag from the Containerfile content hash, matching the
-# launcher's logic: sha256sum Containerfile | cut -c1-64
-#
-# Portable: uses sha256sum on Linux, shasum -a 256 on macOS.
-
-# ---------------------------------------------------------------------------
 # Helper: make_temp / make_tempdir
 # ---------------------------------------------------------------------------
 # Wrappers around mktemp that resolve the resulting path to its canonical form.
@@ -76,26 +68,4 @@ make_tempdir() {
 	local d
 	d="$(mktemp -d)" || return 1
 	realpath "$d"
-}
-
-# ---------------------------------------------------------------------------
-# Helper: compute_image_tag
-# ---------------------------------------------------------------------------
-
-compute_image_tag() {
-	local containerfile="${REPO_ROOT}/Containerfile"
-	local hash
-	if command -v sha256sum &>/dev/null; then
-		hash=$(sha256sum "$containerfile" 2>/dev/null | cut -c1-64)
-	elif command -v shasum &>/dev/null; then
-		hash=$(shasum -a 256 "$containerfile" 2>/dev/null | cut -c1-64)
-	else
-		echo "compute_image_tag: no sha256 tool found (need sha256sum or shasum)" >&2
-		return 1
-	fi
-	if [[ -z "$hash" ]]; then
-		echo "compute_image_tag: failed to hash Containerfile (missing or unreadable: $containerfile)" >&2
-		return 1
-	fi
-	echo "agent-sandbox:${hash}"
 }

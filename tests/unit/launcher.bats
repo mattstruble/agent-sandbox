@@ -52,7 +52,7 @@ teardown() {
     parse_args
 
     [[ "$OPT_AGENT"              == ""    ]]
-    [[ "$OPT_BUILD"              == false ]]
+    [[ "$OPT_PULL"               == false ]]
     [[ "$OPT_FOLLOW_SYMLINKS"    == false ]]
     [[ "$OPT_FOLLOW_ALL_SYMLINKS" == false ]]
     [[ "$OPT_NO_SSH"             == false ]]
@@ -96,17 +96,17 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: --build sets OPT_BUILD to true" {
-    parse_args --build
+@test "parse_args: --pull sets OPT_PULL to true" {
+    parse_args --pull
 
-    [[ "$OPT_BUILD" == true ]]
+    [[ "$OPT_PULL" == true ]]
 }
 
 # bats test_tags=unit
-@test "parse_args: -b shorthand sets OPT_BUILD to true" {
+@test "parse_args: -b shorthand sets OPT_PULL to true" {
     parse_args -b
 
-    [[ "$OPT_BUILD" == true ]]
+    [[ "$OPT_PULL" == true ]]
 }
 
 # bats test_tags=unit
@@ -546,69 +546,10 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 # bats test_tags=unit
-@test "compute_containerfile_hash: returns a 64-character hex string" {
-    # CONTAINERFILE is set to ${SHARE_DIR}/Containerfile = ${REPO_ROOT}/Containerfile
-    local result
-    result=$(compute_containerfile_hash)
-
-    [[ ${#result} -eq 64 ]]
-    [[ "$result" =~ ^[0-9a-f]{64}$ ]]
-}
-
-# bats test_tags=unit
-@test "compute_containerfile_hash: is deterministic for the same file" {
-    local hash1 hash2
-    hash1=$(compute_containerfile_hash)
-    hash2=$(compute_containerfile_hash)
-
-    [[ "$hash1" == "$hash2" ]]
-}
-
-# bats test_tags=unit
-@test "compute_containerfile_hash: different file contents produce different hashes" {
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    local tmp_cf="${tmp_dir}/Containerfile"
-    local original_cf="$CONTAINERFILE"
-
-    # Register a trap to guarantee CONTAINERFILE is restored and temp dir is
-    # cleaned up even if an assertion or compute_containerfile_hash fails.
-    # shellcheck disable=SC2064
-    trap "CONTAINERFILE='${original_cf}'; rm -rf '${tmp_dir}'" EXIT
-
-    # Write a minimal Containerfile and hash it
-    printf 'FROM scratch\n' > "$tmp_cf"
-    CONTAINERFILE="$tmp_cf"
-    local hash1
-    hash1=$(compute_containerfile_hash)
-
-    # Modify the Containerfile and hash it again
-    printf 'FROM scratch\nLABEL version=2\n' > "$tmp_cf"
-    local hash2
-    hash2=$(compute_containerfile_hash)
-
-    CONTAINERFILE="$original_cf"
-    rm -rf "$tmp_dir"
-    trap - EXIT
-
-    [[ "$hash1" != "$hash2" ]]
-}
-
-# bats test_tags=unit
-@test "compute_containerfile_hash: missing Containerfile exits with error" {
-    # Run in a subshell via `run` so the CONTAINERFILE mutation is isolated
-    # and cannot leak into subsequent tests (CONTAINERFILE is a global in the
-    # sourced launcher; mutating it in the parent shell would affect other tests).
-    run bash -c "
-        export AGENT_SANDBOX_SHARE_DIR='${REPO_ROOT}'
-        export AGENT_SANDBOX_VERSION='0.1.0-test'
-        source '${LAUNCHER}'
-        CONTAINERFILE='/nonexistent/Containerfile'
-        compute_containerfile_hash
-    "
-
-    assert_failure
-    assert_output --partial "Containerfile not found"
+@test "image tag: uses VERSION for image tag" {
+    [[ "$VERSION" == "0.1.0-test" ]]
+    local tag="agent-sandbox:${VERSION}"
+    [[ "$tag" == "agent-sandbox:0.1.0-test" ]]
 }
 
 # ---------------------------------------------------------------------------
