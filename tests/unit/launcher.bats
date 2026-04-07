@@ -1073,3 +1073,384 @@ teardown() {
     assert_success
     assert_output "$expected"
 }
+
+# ---------------------------------------------------------------------------
+# 9. load_image() Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime script in a temp dir and set RUNTIME to it.
+# The fake script records the subcommand called and simulates success/failure
+# based on the exit codes passed as arguments.
+#   load_exit  — exit code for the 'load' subcommand (default 0 = success)
+#   tag_exit   — exit code for the 'tag' subcommand used by pull_image (default 0)
+#   images_after_load — if "true", 'images' returns non-empty after 'load' is called
+# Sets _FAKE_RUNTIME_DIR so teardown can clean it up.
+_setup_fake_runtime() {
+    local load_exit="${1:-0}"
+    local tag_exit="${2:-0}"
+    local images_after_load="${3:-true}"
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+
+    # Write a fake runtime that handles the subcommands we care about.
+    # Uses a state file to simulate image appearing after a successful load.
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+# Record the call for inspection
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    load)
+        # Consume stdin (the tarball) so the shell doesn't complain
+        cat > /dev/null
+        if [ ${load_exit} -eq 0 ] && [ "${images_after_load}" = "true" ]; then
+            touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+        fi
+        exit ${load_exit}
+        ;;
+    tag)
+        exit ${tag_exit}
+        ;;
+    images)
+        # Return non-empty if image was loaded (or pre-existing), empty otherwise
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_loaded" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+_teardown_fake_runtime() {
+    if [[ -n "${_FAKE_RUNTIME_DIR:-}" && "$_FAKE_RUNTIME_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_RUNTIME_DIR"
+    fi
+    unset _FAKE_RUNTIME_DIR
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when image path file does not exist" {
+    _setup_fake_runtime 0 0
+
+    local fake_path="/nonexistent/path/image.tar"
+    run load_image "0.1.0-test" "$fake_path"
+
+    _teardown_fake_runtime
+    assert_failure
+    assert_output --partial "not found"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when image tarball is not readable" {
+    # Root bypasses DAC permission checks, so this test is meaningless as root.
+    if [[ "$(id -u)" -eq 0 ]]; then
+        skip "cannot test unreadable files as root"
+    fi
+    _setup_fake_runtime 0 0
+
+    local tarball
+    tarball="$(mktemp)"
+    chmod 000 "$tarball"
+    # shellcheck disable=SC2064
+    trap "chmod 644 '$tarball'; rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    chmod 644 "$tarball"
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "not readable"
+}
+
+# bats test_tags=unit
+@test "load_image: prints loading message with the image path" {
+    _setup_fake_runtime 0 0
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Loading image from"
+    assert_output --partial "$tarball"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when runtime load command fails" {
+    # load exits with code 1
+    _setup_fake_runtime 1 0
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to load image"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when loaded tarball does not produce expected tag" {
+    # load succeeds but images_after_load=false simulates the tag not appearing
+    _setup_fake_runtime 0 0 false
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "tag agent-sandbox:0.1.0-test was not found"
+}
+
+# bats test_tags=unit
+@test "load_image: succeeds and logs confirmation when load produces expected tag" {
+    _setup_fake_runtime 0 0 true
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Image loaded: agent-sandbox:0.1.0-test"
+}
+
+# ---------------------------------------------------------------------------
+# 10. ensure_image() Orchestration Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime that reports image as already present locally.
+_setup_fake_runtime_image_exists() {
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+    # Pre-create the state file so 'images' returns non-empty immediately
+    touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    images)
+        # Return a non-empty image ID — image exists
+        echo "sha256:abc123"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# Helper: create a fake runtime that reports image as absent, and succeeds on load/pull/tag.
+# After a successful load, subsequent 'images' calls return non-empty (simulating the tag appearing).
+_setup_fake_runtime_image_absent() {
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    images)
+        # Return non-empty only after a successful load
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_loaded" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    load)
+        cat > /dev/null
+        touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+        exit 0
+        ;;
+    pull)
+        exit 0
+        ;;
+    tag)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# bats test_tags=unit
+@test "ensure_image: uses local image without load or pull when image already exists" {
+    _setup_fake_runtime_image_exists
+
+    OPT_PULL=false
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    # Track calls to load_image and pull_image
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls load_image when AGENT_SANDBOX_IMAGE_PATH is set and image absent" {
+    _setup_fake_runtime_image_absent
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    export AGENT_SANDBOX_IMAGE_PATH="$tarball"
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == true  ]] || fail "expected load_called=true, got '$load_called'"
+    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls pull_image when AGENT_SANDBOX_IMAGE_PATH is unset and image absent" {
+    _setup_fake_runtime_image_absent
+
+    unset AGENT_SANDBOX_IMAGE_PATH
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls pull_image when AGENT_SANDBOX_IMAGE_PATH is empty string" {
+    _setup_fake_runtime_image_absent
+
+    export AGENT_SANDBOX_IMAGE_PATH=""
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: --pull forces pull_image even when AGENT_SANDBOX_IMAGE_PATH is set" {
+    _setup_fake_runtime_image_absent
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    export AGENT_SANDBOX_IMAGE_PATH="$tarball"
+    OPT_PULL=true
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: --pull forces pull_image even when image already exists locally" {
+    _setup_fake_runtime_image_exists
+
+    unset AGENT_SANDBOX_IMAGE_PATH
+    OPT_PULL=true
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+

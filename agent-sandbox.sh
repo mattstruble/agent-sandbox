@@ -503,7 +503,7 @@ compute_container_name() {
 }
 
 # ---------------------------------------------------------------------------
-# Image management (pull from GHCR)
+# Image management (local cache, tarball load, or GHCR pull)
 # ---------------------------------------------------------------------------
 
 GHCR_IMAGE="ghcr.io/mstruble/agent-sandbox"
@@ -526,6 +526,49 @@ pull_image() {
 	"$RUNTIME" tag "${GHCR_IMAGE}:${tag}" "agent-sandbox:${tag}" ||
 		die "Failed to tag ${GHCR_IMAGE}:${tag} as agent-sandbox:${tag}"
 	log "Image pulled and tagged: agent-sandbox:${tag}"
+}
+
+load_image() {
+	local tag="$1"
+	local path="$2"
+	if [[ ! -f "$path" ]]; then
+		die "Image tarball not found: ${path}"
+	fi
+	if [[ ! -r "$path" ]]; then
+		die "Image tarball is not readable (check permissions): ${path}"
+	fi
+	log "Loading image from ${path}..."
+	if ! "$RUNTIME" load <"$path"; then
+		die "Failed to load image from ${path}. Verify the file is a valid container image tarball."
+	fi
+	# Verify the expected tag is now present. The Nix-built tarball embeds
+	# name=agent-sandbox and tag=<version>, so the load should produce the
+	# correct local tag automatically. If it doesn't, the tarball is mismatched.
+	if ! image_exists_locally "$tag"; then
+		die "Image loaded from ${path} but tag agent-sandbox:${tag} was not found. The tarball may be built for a different version."
+	fi
+	log "Image loaded: agent-sandbox:${tag}"
+}
+
+# ensure_image implements the three-tier image sourcing chain:
+#   Tier 1: use local image if it already exists
+#   Tier 2: load from AGENT_SANDBOX_IMAGE_PATH tarball (set by Nix app wrapper; unset for non-Nix installs)
+#   Tier 3: pull from GHCR (non-Nix fallback)
+# --pull always forces tier 3 regardless of other tiers.
+ensure_image() {
+	local tag="$1"
+	if $OPT_PULL; then
+		pull_image "$tag"
+		return
+	fi
+	if image_exists_locally "$tag"; then
+		return
+	fi
+	if [[ -n "${AGENT_SANDBOX_IMAGE_PATH:-}" ]]; then
+		load_image "$tag" "$AGENT_SANDBOX_IMAGE_PATH"
+		return
+	fi
+	pull_image "$tag"
 }
 
 # ---------------------------------------------------------------------------
@@ -894,10 +937,10 @@ main() {
 	if $OPT_LIST; then do_list; fi
 	if $OPT_STOP; then do_stop "${OPT_WORKSPACE}" "${OPT_AGENT_EXPLICIT}"; fi
 
-	# Guard against running from an uninstalled source checkout where @VERSION@
-	# was never substituted. --prune uses $VERSION to decide which image to keep,
-	# so it must fire before the prune dispatch (and before image management below).
-	if [[ "$VERSION" == "@VERSION@" ]]; then
+	# Guard against running from an uninstalled source checkout where the
+	# version placeholder was never substituted. --prune uses $VERSION to decide
+	# which image to keep, so this must fire before the prune dispatch.
+	if [[ "$VERSION" == "@""VERSION""@" ]]; then
 		die "VERSION was not substituted at build time. Set AGENT_SANDBOX_VERSION or install via the official installer."
 	fi
 
@@ -921,9 +964,7 @@ main() {
 
 	IMAGE_TAG="agent-sandbox:${VERSION}"
 
-	if $OPT_PULL || ! image_exists_locally "$VERSION"; then
-		pull_image "$VERSION"
-	fi
+	ensure_image "$VERSION"
 
 	# ---------------------------------------------------------------------------
 	# Mount and environment assembly
