@@ -71,25 +71,29 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ### Runtime Package Management
 
-- Nix is pre-installed inside the container at build time as a single-user installation (no daemon) so the agent can install and run arbitrary software packages on demand without root access.
+- The container image is built entirely from Nix — all system packages (git, curl, iptables, chrony, jq, nodejs, etc.) are provided by nixpkgs. There is no Debian base layer, no apt-get, and no secondary package manager.
+- Custom derivations in the project's Nix expressions provide binaries not available in nixpkgs (opencode, rtk). These derivations use `fetchurl` with per-architecture URLs and SHA256 hashes.
+- `claude-code` is installed via `npm install -g --ignore-scripts` using the Nix-provided nodejs. The `--ignore-scripts` flag prevents post-install scripts from executing during the image build.
+- Nix is pre-installed inside the container at build time so the agent can install and run arbitrary software packages on demand without root access.
 - The agent can run any package from nixpkgs via `nix run nixpkgs#<package>` or enter a shell with packages via `nix shell nixpkgs#<package>`.
 - The agent can run packages from arbitrary flake URIs (e.g., `nix run github:user/repo#thing`); there is no restriction on which flake sources the agent can use.
-- The `nix` command is available on `PATH` for all shell sessions (interactive and non-interactive) via a container-level `ENV` directive, not via shell profile sourcing.
-- A specific nixpkgs revision is pinned in the Nix flake registry at build time. `nix run nixpkgs#<package>` resolves to this pinned revision, ensuring binary cache hits and reproducible default behavior.
-- The pinned nixpkgs revision is updated automatically via Renovate alongside other container dependencies.
+- The `nix` command is available on `PATH` for all shell sessions (interactive and non-interactive) via the image's environment configuration, not via shell profile sourcing.
+- The nixpkgs revision used for runtime `nix run` commands is pinned at build time via the Nix flake registry, derived from the same `flake.lock` that pins build-time dependencies. There is no separate nixpkgs version pin to maintain.
+- The pinned nixpkgs revision is updated automatically when Renovate updates `flake.lock`.
 - Binary substitutes (pre-built packages) are downloaded only from the official Nix binary cache (`cache.nixos.org`). Third-party binary caches are not trusted.
-- Nix configuration (`/etc/nix/nix.conf`) and the flake registry (`/etc/nix/registry.json`) are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
+- Nix configuration (`/etc/nix/nix.conf`) and the flake registry are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 - The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are not persisted across container restarts. Each session starts with a clean store containing only the Nix tooling itself.
-- The Nix installation works on both amd64 and arm64 architectures without architecture-specific build steps.
-- The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH.
+- The Nix installation works on both amd64 and arm64 architectures — the Nix expression produces architecture-appropriate images.
+- The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH. The Nix instructions text is stored as a static file in the image, read by the entrypoint at runtime.
 - A shell `command_not_found_handle` in `/home/sandbox/.bashrc` suggests `nix run nixpkgs#<cmd>` when an unrecognized command is executed, providing a reactive fallback hint for both agents.
 
 ### Image Management
 
-- The container image is built automatically on first use with no manual step required.
-- The image is cached locally and reused on subsequent runs.
-- When the Containerfile changes, the next run detects the change and rebuilds automatically.
-- `--build` forces an immediate rebuild regardless of cache state.
+- The container image is built entirely from Nix using `dockerTools.buildLayeredImage` — there is no Containerfile. All packages, user configuration, and static files are declared in the project's `flake.nix` and associated Nix expressions.
+- The image is pulled from GHCR on first use when no matching local image exists. The launcher does not build images locally.
+- The image tag matches the launcher's baked-in version. When the launcher runs, it checks for `agent-sandbox:<version>` locally and pulls `ghcr.io/mstruble/agent-sandbox:<version>` if absent.
+- `--pull` forces a re-pull of the image from GHCR regardless of local cache state.
+- `--prune` removes locally cached images whose tag does not match the launcher's version.
 
 ### Distribution
 
@@ -129,8 +133,9 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 #### Image Publishing
 
 - The container image is published to GHCR at `ghcr.io/mstruble/agent-sandbox`.
-- Every push to main publishes a SHA-tagged image (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
-- Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
+- Images are published for both `linux/amd64` and `linux/arm64` architectures as a multi-arch manifest.
+- Every push to main builds on two native runners (x86_64 and aarch64), pushes arch-specific images, and creates a multi-arch manifest tagged with the commit SHA (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
+- Every semver release publishes a version-tagged multi-arch image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
 - `agent-sandbox --version` prints the current version and exits.
 
 ### Testing & Validation
@@ -140,7 +145,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Argument parsing logic is testable for all flags, invalid inputs, and defaults.
 - Config TOML loading is testable for valid config, missing config, partial config, and invalid TOML.
 - Container name generation produces deterministic names and handles special characters in paths.
-- Image tag computation (SHA256 of Containerfile) is testable in isolation.
+- Image tag computation is testable in isolation (version-based tagging).
 - Symlink resolution is testable with filesystem fixtures covering `follow_symlinks`, `follow_all_symlinks`, nested symlinks, broken symlinks, and symlinks into dotfile directories.
 - Dotfile directory protection rejects mounts that would expose sensitive directories.
 - Extra mount path validation is testable.
@@ -156,7 +161,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Firewall blocks non-allowed ports (e.g., 8080, 3000).
 - DNS resolution works through the pinned resolver.
 - IPv6 is disabled.
-- The entrypoint drops to the `sandbox` user after the root setup phase.
+- The entrypoint drops to the `sandbox` user via `su-exec` after the root setup phase.
 - Staged host configs (git config, SSH socket, API keys) land at expected paths inside the container and are readable by the `sandbox` user.
 - A fake agent binary mounted over the real agent binary is executed by the entrypoint without production code changes.
 - `nix run nixpkgs#hello` executes successfully inside the container as the sandbox user.
@@ -177,7 +182,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 #### Test Infrastructure
 - Tests use bats-core with bats-assert and bats-support as the test framework.
 - A Makefile provides `test-unit`, `test-integration`, `test-e2e`, `test` (all), and `test-fast` (unit alias) targets.
-- Integration and e2e targets auto-build the container image if not already built.
+- Integration and e2e targets require the container image to be loaded locally (pulled from GHCR or loaded from a Nix build).
 - bats-core and helper libraries are provided via a Nix devShell in `flake.nix`.
 - Tests are tagged (`unit`, `integration`, `e2e`) to support selective execution via `bats --filter-tags`.
 - CI runs all test tiers after the image build step in `pr-checks.yml`.
@@ -188,7 +193,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, `install.sh`).
 - `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
 - PR titles are validated against the conventional commit format (required for Release Please changelog generation).
-- Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR and every push to main.
+- `vulnix` scans the Nix store closure of the built container image against the NVD for known vulnerabilities on every PR and every push to main.
 - Trivy performs a filesystem scan on the repository on every PR and every push to main.
 - All test tiers (unit, integration, e2e) run after the container image is built in CI.
 - All CI checks are required to pass before a PR can be merged.
@@ -201,15 +206,17 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Merging the release PR creates a GitHub Release with a semver tag.
 - The version source of truth is `flake.nix`; Release Please bumps it there.
 - The launcher supports `--version` (or `-v`) which prints the version and exits.
-- Each GitHub Release includes a platform-independent tarball (`agent-sandbox-<semver>.tar.gz`) containing the launcher (with version and share-dir substituted for the non-Nix install path) and support files.
+- Each GitHub Release includes a platform-independent tarball (`agent-sandbox-<semver>.tar.gz`) containing the launcher (with version and share-dir substituted for the non-Nix install path) and support files (entrypoint and firewall scripts).
 
 ### Dependency Management
 
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code, nixpkgs revision) are grouped into a single PR.
+- Most container dependencies (git, curl, iptables, chrony, jq, nodejs, gh, uv, etc.) are managed through the `flake.lock` nixpkgs pin. Updating `flake.lock` updates all nixpkgs-sourced packages in one operation.
+- Custom Nix derivations for opencode and rtk have version strings and SHA256 hashes tracked by Renovate regex managers targeting the files in the `packages/` directory.
+- The claude-code npm version is tracked by a Renovate regex manager.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
-- Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.
+- Dependency versions are pinned via `flake.lock` and per-derivation SHA256 hashes.
 
 ## Open Questions
 

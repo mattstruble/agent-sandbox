@@ -14,7 +14,7 @@
 - An iptables port-based network filter restricting outbound traffic to HTTP/HTTPS, DNS (pinned to container resolver), NTP (pinned to Cloudflare IPs), and SSH (optional)
 - Deterministic container naming so multiple instances run in parallel without collision
 
-The container image is built locally on first use and cached by Containerfile content hash, or pulled from GHCR (`ghcr.io/mstruble/agent-sandbox`). Quick standup and teardown; supports many parallel sessions.
+The container image is built entirely from Nix via `dockerTools.buildLayeredImage` and published to GHCR (`ghcr.io/mstruble/agent-sandbox`). The launcher pulls the image on first use. Quick standup and teardown; supports many parallel sessions.
 
 **Reference implementations studied:**
 - [`alexjuda/ws1/sandbox`](https://github.com/alexjuda/ws1/tree/main/sandbox) — Podman/Docker Makefile wrapper for opencode
@@ -37,12 +37,14 @@ agent-sandbox/
 │   ├── nixos.nix               # NixOS module (package + container runtime)
 │   ├── darwin.nix              # nix-darwin module (package + container runtime)
 │   └── home-manager.nix        # Home Manager module (package + runtime + config)
-├── flake.nix                   # flake-parts: packages, apps, and module exports
+├── packages/
+│   ├── opencode.nix            # Custom derivation for opencode binary
+│   └── rtk.nix                 # Custom derivation for rtk binary
+├── flake.nix                   # flake-parts: packages, container image, apps, module exports
 ├── flake.lock
 ├── agent-sandbox.sh            # Launcher script  → installed to $out/bin/
-├── Containerfile               # Image definition → installed to $out/share/agent-sandbox/
-├── entrypoint.sh               # Container entrypoint → $out/share/agent-sandbox/
-├── init-firewall.sh            # iptables port-based network filter → $out/share/agent-sandbox/
+├── entrypoint.sh               # Container entrypoint → baked into image
+├── init-firewall.sh            # iptables port-based network filter → baked into image
 └── renovate.json               # Renovate dependency update configuration
 ```
 
@@ -55,7 +57,7 @@ agent-sandbox [OPTIONS] [WORKSPACE]
 
 Options:
   -a, --agent <name>       Agent to run: opencode (default) or claude
-  -b, --build              Force rebuild image before running
+  -b, --pull               Force re-pull image from GHCR before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories
   --mount <path>           Mount an extra host path read-only (repeatable; append :rw for read-write)
@@ -78,7 +80,7 @@ Examples:
   agent-sandbox --mount ~/.kube        # mount kubectl config read-only
   agent-sandbox --mount ~/data:rw      # mount a directory read-write
   agent-sandbox --no-ssh               # skip SSH agent forwarding
-  agent-sandbox --build                # force image rebuild, then run
+  agent-sandbox --pull                # force image re-pull, then run
   agent-sandbox --list                 # show running sandboxes
   agent-sandbox --stop                 # stop all sandboxes for current directory
   agent-sandbox --stop --agent claude  # stop only the claude sandbox
@@ -91,51 +93,58 @@ Examples:
 
 **`--stop` behavior:** Without `--agent`, stops all `agent-sandbox-*` containers for the given workspace (both opencode and claude if running). With `--agent`, stops only the container for that specific agent. If no matching container is running, exits 0 silently.
 
-**`--prune` behavior:** Lists all local `agent-sandbox:*` images, removes any whose tag does not match the current Containerfile hash, and prints the images removed and space freed.
+**`--prune` behavior:** Lists all local `agent-sandbox:*` images, removes any whose tag does not match the launcher's current version, and prints the images removed and space freed.
 
 **Runtime detection:** prefers `podman`, falls back to `docker`. Overridable via `AGENT_SANDBOX_RUNTIME=docker`. When using Podman, `--userns keep-id` is added automatically to preserve host UID in the workspace mount (avoids file permission issues).
 
 ---
 
-## Container Image (`Containerfile`)
+## Container Image
 
-**Base:** `debian:bookworm-slim`
+**Build method:** `dockerTools.buildLayeredImage` from the project's `flake.nix`, following the pattern established by the upstream NixOS/nix `docker.nix`. There is no Containerfile — the image is defined entirely in Nix.
+
+**Base:** Pure Nix (no Debian, Alpine, or other distro layer). All packages come from nixpkgs or custom derivations.
 
 **Installed at build time:**
 
-| Package | Method |
+| Package | Source |
 |---|---|
-| bash, curl, git, make, gosu, procps | apt |
-| iptables, iproute2, dnsutils, chrony | apt |
-| jq, ipset, ca-certificates, xz-utils | apt |
-| nodejs, npm | apt |
-| `gh` CLI | curl from GitHub releases (version-pinned) |
-| `uv` | copied from `ghcr.io/astral-sh/uv` (pinned digest) |
-| `nix` | single-user install via `releases.nixos.org/nix/nix-X.Y.Z/install` (version-pinned, auto-detects architecture) |
-| `opencode` | curl from GitHub releases (version-pinned) → `~/.opencode/bin/opencode` |
-| `claude-code` | `npm install -g @anthropic-ai/claude-code@X.Y.Z` |
-| `rtk` | curl from GitHub releases (version-pinned) → `/usr/local/bin/rtk` |
+| bash, curl, git, make, procps, findutils, coreutils | nixpkgs |
+| iptables, ipset, iproute2, dnsutils | nixpkgs |
+| jq, ca-certificates, xz | nixpkgs |
+| chrony | nixpkgs |
+| nodejs, npm | nixpkgs |
+| su-exec | nixpkgs |
+| `gh` CLI | nixpkgs |
+| `uv` | nixpkgs |
+| `nix` | nixpkgs (bundled via `dockerTools.buildLayeredImage`) |
+| `opencode` | Custom derivation (`packages/opencode.nix`) — `fetchurl` from GitHub releases, per-architecture |
+| `rtk` | Custom derivation (`packages/rtk.nix`) — `fetchurl` from GitHub releases, per-architecture |
+| `claude-code` | `npm install -g --ignore-scripts @anthropic-ai/claude-code@X.Y.Z` via Nix-provided nodejs |
 
-**Binary pinning:** All binaries installed from external sources are pinned to specific release versions. Downloads are over TLS. SHA256 checksum verification has been removed in favor of version pinning to enable automated dependency updates via Renovate. The `claude-code` npm package is pinned to a specific version.
+**User management:** A `sandbox` user (UID 1000) is defined in the Nix expression. `/etc/passwd`, `/etc/group`, and `/etc/shadow` are generated directly by the Nix build (same pattern as upstream NixOS/nix `docker.nix`). No `useradd` or `shadow` package is needed at runtime.
 
-A `sandbox` user is created at UID 1000. The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `gosu` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
+**Privilege model:** The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `su-exec` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
 
-**Image tagging:** `agent-sandbox:<sha256-of-Containerfile-contents>`. The launcher computes this hash at startup, checks `podman images` for the tag, and builds automatically if absent. `--build` forces a rebuild unconditionally.
+**Static files baked into image:** The Nix instructions text (appended to agent prompt files at runtime) and the default OpenCode permissions JSON are stored as Nix-produced files at `/etc/agent-sandbox/` in the image. The entrypoint reads these files rather than generating them inline.
+
+**Image tagging:** `agent-sandbox:<version>` for releases, `agent-sandbox:<commit-sha>` for CI builds. The launcher knows its own version and pulls the matching tag from GHCR.
+
+**Multi-architecture:** The image is built natively for both `linux/amd64` and `linux/arm64`. CI uses two runners (one per architecture) and publishes a multi-arch manifest.
 
 ---
 
 ## Nix Runtime Package Management
 
-Nix is installed at build time as a single-user installation (no daemon) to give the agent the ability to install and run arbitrary software packages on demand without root access. The `sandbox` user owns `/nix` and can `nix run`, `nix shell`, and `nix build` freely. No Nix daemon runs inside the container.
+Nix is included in the container image at build time via `dockerTools.buildLayeredImage` (the Nix package is part of the image's package set). The `sandbox` user owns `/nix` and can `nix run`, `nix shell`, and `nix build` freely. No Nix daemon runs inside the container.
 
-**PATH integration:** The Nix binary directory (`~/.nix-profile/bin`) is added to `PATH` via a Containerfile `ENV` directive. This ensures `nix` is available in all shell contexts — interactive, non-interactive, and subshells — without relying on shell profile sourcing.
+**PATH integration:** The Nix binary directory is added to `PATH` via the image's `Env` configuration. This ensures `nix` is available in all shell contexts — interactive, non-interactive, and subshells — without relying on shell profile sourcing.
 
 **Immutable configuration:** Nix settings live in `/etc/nix/` (root-owned, mode `0444`):
 
 | File | Purpose |
 |---|---|
 | `/etc/nix/nix.conf` | Enables flakes, disables Nix build sandbox, restricts substituters to `cache.nixos.org` |
-| `/etc/nix/registry.json` | Pins `nixpkgs` to a specific commit for reproducible binary cache hits |
 
 The `sandbox` user cannot modify, delete, or create files in `/etc/nix/`. The user can create `~/.config/nix/nix.conf` to add settings, but cannot override `substituters` (only `extra-substituters` is available at the user level, and there are no trusted substituters configured).
 
@@ -154,13 +163,13 @@ trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDS
 - `accept-flake-config = false` — prevents flakes from injecting trusted settings via their `nixConfig` attribute.
 - `substituters` — locked to the official binary cache. No third-party caches.
 
-**nixpkgs pinning:** The flake registry pins `nixpkgs` to a specific `nixpkgs-unstable` commit via `ARG NIXPKGS_REV` in the Containerfile. `nix run nixpkgs#<package>` resolves to this revision, ensuring packages are served from the binary cache. Renovate updates the pinned commit automatically.
+**nixpkgs pinning:** The flake registry pins `nixpkgs` to the same revision used in `flake.lock` at build time. This is generated as part of the `dockerTools.buildLayeredImage` invocation using the `flake-registry` parameter (same pattern as upstream NixOS/nix `docker.nix`). `nix run nixpkgs#<package>` resolves to this revision, ensuring packages are served from the binary cache. There is no separate `NIXPKGS_REV` to maintain — updating `flake.lock` updates both the build-time and runtime nixpkgs pin in one operation.
 
 **Ephemeral store:** The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are lost when the container stops. Each session starts with a clean store containing only the Nix tooling. Binary substitutes from `cache.nixos.org` make re-downloads fast (seconds for most packages).
 
 **Arbitrary flake URIs:** The agent can use any flake URI (e.g., `nix run github:user/repo#thing`). This is intentionally unrestricted — the container boundary is the security layer, and `curl`, `uvx`, and `npx` already allow arbitrary remote code execution.
 
-**Agent awareness:** The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, telling the agent to prefer `nix run`/`nix shell` for tools not on PATH. A `command_not_found_handle` function in `/home/sandbox/.bashrc` provides a reactive fallback — when the agent runs an unrecognized command, the shell suggests `nix run nixpkgs#<cmd>` in the error output.
+**Agent awareness:** The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, telling the agent to prefer `nix run`/`nix shell` for tools not on PATH. The instructions text is stored as a static file at `/etc/agent-sandbox/nix-instructions.md` in the image. A `command_not_found_handle` function in `/home/sandbox/.bashrc` provides a reactive fallback — when the agent runs an unrecognized command, the shell suggests `nix run nixpkgs#<cmd>` in the error output.
 
 ---
 
@@ -196,9 +205,9 @@ Host agent config directories are **staged** at read-only mount points rather th
 
 Additional variables can be forwarded via `config.toml` `[env]` `extra_vars`. Variables not in the default list or `extra_vars` are never forwarded — this prevents accidental leakage of unrelated secrets (e.g., `DATABASE_API_KEY`, `STRIPE_API_KEY`) into the container. Each variable is forwarded only if present in the host environment.
 
-**Container capabilities:** `--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW --cap-add=SETUID --cap-add=SETGID --cap-add=SYS_TIME` — all capabilities dropped first, then only what iptables, gosu, and chronyd require is added back. `SETUID`/`SETGID` are required for `gosu` to drop privileges; `SYS_TIME` is required for chronyd to step the system clock.
+**Container capabilities:** `--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW --cap-add=SETUID --cap-add=SETGID --cap-add=SYS_TIME` — all capabilities dropped first, then only what iptables, su-exec, and chronyd require is added back. `SETUID`/`SETGID` are required for `su-exec` to drop privileges; `SYS_TIME` is required for chronyd to step the system clock.
 
-**Privilege escalation prevention:** `--security-opt=no-new-privileges` prevents any process inside the container from gaining elevated privileges.
+**Privilege escalation prevention:** `--security-opt=no-new-privileges` prevents any process inside the container from gaining elevated privileges. This is compatible with `su-exec` which uses syscall-based privilege dropping.
 
 **Resource limits:** `--memory=8g --cpus=4` by default. Overridable via `~/.config/agent-sandbox/config.toml` `[resources]` section.
 
@@ -212,11 +221,11 @@ Runs inside the container in this order:
 
 1. Run `/init-firewall.sh` as root to establish iptables port-based network filter and disable IPv6 — **first**, before any other step
 2. Start `chronyd` as root for time synchronization; if it fails to start, log a warning and continue
-3. Drop to the `sandbox` user via `gosu`; steps 4–9 run as `sandbox`
+3. Drop to the `sandbox` user via `su-exec`; steps 4–9 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 5. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-6. Append Nix usage instructions to `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`; create files if absent
-7. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; create the file if absent
+6. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`; create files if absent
+7. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
 8. Based on `$AGENT` env var (set by launcher):
    - `opencode`: run `rtk init -g --opencode`
    - `claude`: run `rtk init -g`
@@ -225,6 +234,8 @@ Runs inside the container in this order:
    - `claude`: `exec claude --dangerously-skip-permissions`
 
 The firewall runs first to eliminate any unprotected network window. `rtk init` is a local-only operation and runs safely behind the established firewall.
+
+**Note:** The firewall script does not hardcode `/usr/sbin:/usr/bin` paths. In the Nix-built image, all binaries (`iptables`, `ip6tables`, `sysctl`, etc.) are on `PATH` via the Nix profile.
 
 ---
 
@@ -287,27 +298,50 @@ cpus = 4                        # container CPU limit
 
 ## Nix Packaging (`flake.nix`)
 
-The package is built with `pkgs.stdenv.mkDerivation`:
+The flake exports two main outputs:
+
+### Launcher package (`packages.default`)
+
+Built with `pkgs.stdenv.mkDerivation`:
 
 ```
 $out/
   bin/
     agent-sandbox          # launcher script (with @SHARE_DIR@ substituted)
   share/agent-sandbox/
-    Containerfile
     entrypoint.sh
     init-firewall.sh
 ```
 
-The launcher has `@SHARE_DIR@` replaced with `$out/share/agent-sandbox` at build time, so it always locates its Containerfile regardless of invocation directory.
+The launcher has `@SHARE_DIR@` replaced with `$out/share/agent-sandbox` at build time, so it always locates its support files regardless of invocation directory. `@VERSION@` is replaced with the `version` value from the derivation, enabling `agent-sandbox --version`.
 
-The launcher also has `@VERSION@` replaced with the `version` value from the derivation at build time, enabling `agent-sandbox --version`.
+### Container image (`packages.container-image`)
+
+Built with `dockerTools.buildLayeredImage` following the pattern from NixOS/nix `docker.nix`. The Nix expression:
+
+1. Defines the `sandbox` user (UID 1000) and generates `/etc/passwd`, `/etc/group`, `/etc/shadow`
+2. Assembles all packages (nixpkgs + custom derivations) into a layered image
+3. Generates `/etc/nix/nix.conf` with immutable security settings
+4. Pins the flake registry to the same nixpkgs revision as `flake.lock`
+5. Includes static files at `/etc/agent-sandbox/` (Nix instructions, default permissions JSON)
+6. Includes `entrypoint.sh` and `init-firewall.sh`
+7. Installs `claude-code` via npm in a build step
+8. Configures the OCI image: entrypoint, env vars, labels, user
+
+The image is produced as a tarball: `nix build .#container-image` outputs a file loadable via `docker load < result` or `podman load < result`.
+
+### Custom derivations (`packages/`)
+
+Binaries not available in nixpkgs have custom derivations:
+
+- **`packages/opencode.nix`** — `fetchurl` from GitHub releases with per-architecture URLs (`x64`/`arm64`) and SHA256 hashes. Extracts the tarball, installs the binary, and runs `opencode db migrate` at build time.
+- **`packages/rtk.nix`** — `fetchurl` from GitHub releases with per-architecture URLs and SHA256 hashes.
+
+Both derivations use `stdenv.hostPlatform` to select the correct architecture variant.
 
 **Runtime inputs** (declared in flake, available automatically via `nix run`):
 - `podman`
-- `coreutils`, `gnused`, `gnugrep`
-- `jq` (for patching `opencode.json`)
-- `dasel` (for reading `config.toml`)
+- `coreutils`, `findutils`
 
 **Supported systems:** `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`
 
@@ -319,6 +353,9 @@ nix run github:mstruble/agent-sandbox
 
 # Permanent install into user profile:
 nix profile install github:mstruble/agent-sandbox
+
+# Build the container image locally:
+nix build github:mstruble/agent-sandbox#container-image
 
 # Reference from another flake (devShell, home-manager, etc.):
 inputs.agent-sandbox.url = "github:mstruble/agent-sandbox";
@@ -399,7 +436,7 @@ When all settings are at their defaults, no config file is generated — the lau
 
 ## CI/CD Workflows
 
-Four GitHub Actions workflows, each with a single responsibility. All run on `ubuntu-latest` runners. Nix steps use `DeterminateSystems/nix-installer-action`.
+Four GitHub Actions workflows, each with a single responsibility. Nix steps use `DeterminateSystems/nix-installer-action`.
 
 ### PR Checks (`pr-checks.yml`)
 
@@ -407,31 +444,34 @@ Triggered on every pull request to main. Three parallel jobs:
 
 **Lint job:**
 - Install Nix via `DeterminateSystems/nix-installer-action`
-- `nixfmt --check flake.nix` — fail if not formatted
+- `nixfmt --check flake.nix` and all `.nix` files in `packages/` — fail if not formatted
 - `nix flake check` — validate flake evaluates
 - ShellCheck on `agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`
 - Conventional commit validation on the PR title via `amannn/action-semantic-pull-request`
 
 **Build + Scan job:**
-- `docker build` the image from `Containerfile`
-- Trivy container scan (HIGH + CRITICAL severities)
+- `nix build .#container-image` to produce the image tarball
+- `docker load` the tarball into the local Docker daemon
+- `vulnix` scan on the Nix store closure of the image for known vulnerabilities
 - Trivy filesystem scan on the repository
 - Image is **not** pushed — build artifact only
 
 **Nix build job:**
-- `nix build` to verify the Nix package builds cleanly
+- `nix build` to verify the launcher Nix package builds cleanly
 
 All three jobs are required to pass before merge.
 
 ### Image Publishing (`publish-image.yml`)
 
-Triggered on push to main:
+Triggered on push to main. Runs on two runners (`ubuntu-latest` for x86_64, ARM runner for aarch64):
 
-1. Build the image from `Containerfile`
-2. Tag as `ghcr.io/mstruble/agent-sandbox:<commit-sha>`
-3. Push to GHCR via `docker/login-action` + `GITHUB_TOKEN`
-4. Trivy container scan on the pushed image
-5. Add OCI labels: `org.opencontainers.image.version`, `org.opencontainers.image.source`, `org.opencontainers.image.revision`
+1. `nix build .#container-image` on each architecture
+2. `docker load` the tarball
+3. Tag as `ghcr.io/mstruble/agent-sandbox:<commit-sha>-<arch>`
+4. Push arch-specific images to GHCR
+5. Create and push a multi-arch manifest as `ghcr.io/mstruble/agent-sandbox:<commit-sha>`
+6. `vulnix` scan on the image closure
+7. Add OCI labels: `org.opencontainers.image.version`, `org.opencontainers.image.source`, `org.opencontainers.image.revision`
 
 ### Release Please (`release-please.yml`)
 
@@ -448,7 +488,7 @@ Triggered on push to main:
 Triggered when Release Please creates a GitHub Release:
 
 1. Read the release version from the tag
-2. Pull the SHA-tagged image already published by `publish-image.yml` on the merge commit
+2. Pull the SHA-tagged multi-arch image already published by `publish-image.yml` on the merge commit
 3. Re-tag as `ghcr.io/mstruble/agent-sandbox:<semver>` and `ghcr.io/mstruble/agent-sandbox:latest`
 4. Push both tags to GHCR
 
@@ -470,17 +510,13 @@ For the GHCR-published image (non-Nix distribution path), the version is baked i
 
 `renovate.json` at the repository root configures automated dependency update PRs grouped by category.
 
-**Container dependencies** (single PR):
-- `debian:bookworm-slim` base image — Renovate's Dockerfile manager
-- `gh` CLI — regex manager matching the version string in the curl URL
-- `rtk` — regex manager matching the version string in the curl URL
-- `uv` — regex manager matching the image tag and digest in the `COPY --from` directive
-- `claude-code` — regex manager matching the npm version string
-- `nix` installer — regex manager matching the version in the releases URL
-- `nixpkgs` commit pin — regex manager tracking `nixpkgs-unstable` branch HEAD via `git-refs` datasource
+**Nix flake inputs** (single PR):
+- `flake.lock` — Renovate's nix manager runs `nix flake update`. This updates nixpkgs and all nixpkgs-sourced packages (git, curl, iptables, chrony, jq, nodejs, gh, uv, su-exec, etc.) in one operation.
 
-**Nix** (single PR):
-- `flake.lock` — Renovate's nix manager runs `nix flake update`
+**Custom derivations** (single PR):
+- `opencode` — regex manager matching the version string and SHA256 hash in `packages/opencode.nix`
+- `rtk` — regex manager matching the version string and SHA256 hash in `packages/rtk.nix`
+- `claude-code` — regex manager matching the npm version string in the container image Nix expression
 
 **GitHub Actions** (single PR):
 - Action versions in workflow files — Renovate's github-actions manager
@@ -504,10 +540,17 @@ Configured on the repository (not via workflow):
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| gosu privilege drop | Root → sandbox via `gosu`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox |
+| Container image build | `dockerTools.buildLayeredImage` from Nix, no Containerfile | Single package manager (Nix) for all dependencies; eliminates Debian+apt+curl+npm+COPY-from hybrid; reproducible, content-addressed images |
+| su-exec privilege drop | Root → sandbox via `su-exec`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox; `su-exec` is smaller than `gosu` and idiomatic in minimal/Nix containers |
+| Multi-architecture | Native builds on x86_64 and aarch64 runners, multi-arch manifest | Avoids cross-compilation complexity; ARM Mac users get native images instead of emulation |
+| Image distribution | Pull-only from GHCR; no local build path | Users pull pre-built images; eliminates need to ship Containerfile; Nix users can build locally via `nix build .#container-image` |
+| Custom derivations | `packages/opencode.nix`, `packages/rtk.nix` | Isolates version+hash per tool; clean Renovate regex targets; keeps `flake.nix` readable |
+| Vulnerability scanning | `vulnix` on Nix store closure + Trivy filesystem scan | `vulnix` understands Nix derivations (Trivy cannot enumerate packages in Nix images); Trivy fs scan catches non-package concerns |
+| nixpkgs runtime pin | Flake registry derived from `flake.lock` | Single source of truth for nixpkgs version; updating `flake.lock` updates both build-time and runtime pins |
+| Static entrypoint files | Nix instructions and default permissions JSON at `/etc/agent-sandbox/` | Entrypoint reads files instead of inline heredocs; build-time generation via Nix |
 | Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW + SETUID + SETGID + SYS_TIME |
 | NTP pinning | UDP 123 restricted to Cloudflare IPs (162.159.200.1, 162.159.200.123) | Mitigates NTP amplification and exfiltration; no DNS dependency at chrony startup |
-| Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with gosu (syscall-based) |
+| Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with su-exec (syscall-based) |
 | IPv6 | Disabled via `--sysctl` at container creation + defense-in-depth sysctl in init-firewall.sh; hard-verified via `/proc` | Eliminates iptables bypass via IPv6 |
 | Firewall ordering | Firewall runs first in entrypoint | No unprotected network window before agent starts |
 | Port-based network filter | Allow TCP 80/443 to any destination; block all other outbound | Agents need unrestricted web access for MCP servers, documentation, APIs, and web browsing; IP-based allowlisting is infeasible |
@@ -516,24 +559,24 @@ Configured on the repository (not via workflow):
 | API key allowlist | Explicit list, not glob | Prevents leaking unrelated secrets into the container |
 | Symlink opt-in | `--follow-symlinks` required, dotfile dirs denied | Prevents accidental exposure of `~/.ssh`, `~/.gnupg`, etc. |
 | DNS pinning | UDP 53 restricted to container resolver | Mitigates DNS tunneling exfiltration |
-| Binary pinning | Version-pinned downloads over TLS | Enables automated Renovate updates; consistent trust model across all deps |
+| Binary pinning | nixpkgs packages via `flake.lock`; custom derivations with SHA256 hashes | Reproducible builds; Renovate-updatable |
 | Release automation | Release Please with conventional commits | Deterministic semver from commit history; auto-generated changelogs |
 | Image publishing | SHA on main, semver+latest on release | Every main commit is pullable; releases are stable, never rebuilt |
 | Release re-tag | Pull existing SHA image, re-tag | Release image is byte-identical to what was tested on main |
-| Dependency updates | Renovate with grouped PRs | Handles custom Containerfile patterns; reduces PR noise via grouping |
-| CI runner | `ubuntu-latest` + `DeterminateSystems/nix-installer-action` | No self-hosted runners needed; native amd64 build |
-| Security scanning | Trivy on PRs and main | Catches CVEs in OS packages and installed binaries before and after merge |
+| Dependency updates | Renovate with `flake.lock` + regex managers for custom derivations | `flake.lock` handles most packages; regex managers for opencode/rtk/claude-code |
+| CI runner | `ubuntu-latest` (x86_64) + ARM runner (aarch64) + `DeterminateSystems/nix-installer-action` | Native multi-arch builds; no cross-compilation |
+| Security scanning | `vulnix` on Nix closure + Trivy filesystem | `vulnix` understands Nix; Trivy covers non-package concerns |
 | Branch protection | Required checks + squash-merge | Ensures clean conventional commit history for Release Please |
 | Flake framework | `flake-parts` over `flake-utils` | Supports both per-system (packages, apps) and system-agnostic (modules) outputs cleanly |
 | Module split | Three modules: NixOS, darwin, Home Manager | NixOS and darwin are system-level (package only); HM is user-level (package + config) matching the per-user nature of the tool |
 | Config generation | `pkgs.formats.toml` via `xdg.configFile` | Standard Nix approach; only writes config when settings differ from defaults |
 | Container runtime option | `containerPackage` with per-platform default | More flexible than a boolean toggle; lets users pass any runtime package or null to self-manage |
-| Nix in-container | Single-user install, no daemon, ephemeral store | Agent can install arbitrary packages on demand without root; no state leaks between sessions |
-| Nix config immutability | `/etc/nix/` root-owned, `0444` files | Agent cannot modify substituters, experimental features, or trust settings |
+| Nix in-container | Bundled via `dockerTools.buildLayeredImage`, no separate install step, ephemeral store | Agent can install arbitrary packages on demand without root; no state leaks between sessions |
+| Nix config immutability | `/etc/nix/` root-owned, `0444` files, generated by Nix build | Agent cannot modify substituters, experimental features, or trust settings |
 | Nix substituters | `cache.nixos.org` only | No third-party binary caches; source builds from arbitrary flakes still allowed |
 | Nix flake URI restrictions | None — arbitrary URIs allowed | Container boundary is the security layer; `curl`/`uvx`/`npx` already allow arbitrary remote code |
-| nixpkgs pinning | Specific commit in `/etc/nix/registry.json`, Renovate-updated | Reproducible default path with binary cache hits; agent can override with explicit rev |
-| Nix PATH integration | `ENV` directive in Containerfile | Works for non-interactive shells; explicit over shell profile sourcing |
+| nixpkgs pinning | Flake registry derived from `flake.lock` at build time | Single source of truth; binary cache hits; agent can override with explicit rev |
+| Nix PATH integration | `Env` directive in OCI image config | Works for non-interactive shells; explicit over shell profile sourcing |
 
 ---
 
@@ -547,11 +590,11 @@ The container boundary is the primary trust line. The network filter is defense-
 - **SSH agent socket.** The forwarded `SSH_AUTH_SOCK` allows the container to use all keys loaded in the host's SSH agent to authenticate to any SSH server. Port 22 is open outbound. This is required for git-over-SSH but means a misbehaving agent can authenticate as the user to arbitrary SSH hosts. Use `--no-ssh` if git-over-SSH is not needed.
 - **Workspace write access.** The agent has full read-write access to the mounted workspace. It can modify `.git/hooks`, `.github/workflows`, `Makefile`, or other files that may execute on the host after the session. Review agent changes before running host-side automation.
 - **DNS.** DNS queries are pinned to the container's configured resolver (from `/etc/resolv.conf`). This mitigates tunneling to attacker-controlled nameservers but does not prevent all DNS-based exfiltration techniques (e.g., encoding data in queries to domains that resolve through the pinned resolver's upstream chain).
-- **SYS_TIME capability.** `--cap-add=SYS_TIME` is granted to the container for chronyd to adjust the system clock. After `gosu` drops to the `sandbox` user, `SYS_TIME` remains available to all processes in the container, including the agent. A misbehaving agent could manipulate the system clock to defeat time-sensitive security checks (TLS certificate validity, JWT/TOTP expiry, AWS SigV4 windows). This is an accepted trade-off: clock manipulation is a lower-severity capability than the unrestricted HTTPS egress already permitted, and the alternative (no time synchronization) causes real operational failures after host sleep/resume.
+- **SYS_TIME capability.** `--cap-add=SYS_TIME` is granted to the container for chronyd to adjust the system clock. After `su-exec` drops to the `sandbox` user, `SYS_TIME` remains available to all processes in the container, including the agent. A misbehaving agent could manipulate the system clock to defeat time-sensitive security checks (TLS certificate validity, JWT/TOTP expiry, AWS SigV4 windows). This is an accepted trade-off: clock manipulation is a lower-severity capability than the unrestricted HTTPS egress already permitted, and the alternative (no time synchronization) causes real operational failures after host sleep/resume.
 
 **Mitigations in place:**
 
-- Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` + `SETUID` + `SETGID` + `SYS_TIME` only; `NET_ADMIN`/`NET_RAW` for iptables, `SETUID`/`SETGID` for gosu privilege drop, `SYS_TIME` for chronyd clock adjustment)
+- Capabilities dropped to minimum (`NET_ADMIN` + `NET_RAW` + `SETUID` + `SETGID` + `SYS_TIME` only; `NET_ADMIN`/`NET_RAW` for iptables, `SETUID`/`SETGID` for su-exec privilege drop, `SYS_TIME` for chronyd clock adjustment)
 - `no-new-privileges` prevents execve-based privilege escalation
 - IPv6 disabled via `--sysctl` at container creation + defense-in-depth sysctl in entrypoint; hard-verified via `/proc`
 - Firewall established before any agent code runs
@@ -559,8 +602,8 @@ The container boundary is the primary trust line. The network filter is defense-
 - API keys restricted to an explicit allowlist (not a glob pattern)
 - Symlink auto-mounting is opt-in and denies dotfile directories by default
 - Resource limits prevent host starvation
-- All externally installed binaries are version-pinned and downloaded over TLS
-- Trivy scans the container image for CVEs on every PR and main push
+- All container packages are sourced from nixpkgs (content-addressed, reproducible) or custom Nix derivations with SHA256 hashes
+- `vulnix` scans the container image's Nix store closure for CVEs on every PR and main push
 
 ---
 

@@ -3,18 +3,18 @@
 ## Source
 PRD Capability Group: Runtime Package Management
 Behaviors covered:
-- A specific nixpkgs revision is pinned in the Nix flake registry at build time. `nix run nixpkgs#<package>` resolves to this pinned revision, ensuring binary cache hits and reproducible default behavior.
-- The pinned nixpkgs revision is updated automatically via Renovate alongside other container dependencies.
+- The nixpkgs revision used for runtime `nix run` commands is pinned at build time via the Nix flake registry, derived from the same `flake.lock` that pins build-time dependencies.
+- The pinned nixpkgs revision is updated automatically when Renovate updates `flake.lock`.
 - Binary substitutes (pre-built packages) are downloaded only from the official Nix binary cache (`cache.nixos.org`). Third-party binary caches are not trusted.
-- Nix configuration (`/etc/nix/nix.conf`) and the flake registry (`/etc/nix/registry.json`) are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
+- Nix configuration (`/etc/nix/nix.conf`) and the flake registry are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 
 ## Summary
-Locks down the Nix installation with immutable, root-owned configuration files. Pins nixpkgs to a specific revision for reproducible binary cache hits, restricts substituters to `cache.nixos.org`, and integrates the nixpkgs revision into Renovate for automated updates. The agent retains full ability to use Nix but cannot alter its trust model or binary cache sources.
+Locks down the Nix installation with immutable, root-owned configuration files baked into the Nix-built image. Pins nixpkgs to the same revision as `flake.lock` via the `flake-registry` parameter of `dockerTools.buildLayeredImage`, restricts substituters to `cache.nixos.org`, and relies on `flake.lock` updates via Renovate for version management. The agent retains full ability to use Nix but cannot alter its trust model or binary cache sources.
 
 ## Acceptance Criteria
 
 ### `/etc/nix/nix.conf`
-- [ ] Written at build time with root ownership and mode `0444`.
+- [ ] Generated at build time by the Nix image expression with root ownership and mode `0444`.
 - [ ] Contains `experimental-features = nix-command flakes`.
 - [ ] Contains `sandbox = false` (Nix build sandbox; single-user mode cannot use it).
 - [ ] Contains `warn-dirty = false`.
@@ -23,23 +23,23 @@ Locks down the Nix installation with immutable, root-owned configuration files. 
 - [ ] Contains `trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=`.
 - [ ] The `sandbox` user cannot write to, delete, or replace this file.
 
-### `/etc/nix/registry.json`
-- [ ] Written at build time with root ownership and mode `0444`.
-- [ ] Pins `nixpkgs` to a specific commit hash of the `NixOS/nixpkgs` repository.
+### Flake registry (nixpkgs pin)
+- [ ] The nixpkgs pin is derived from the project's `flake.lock` at build time — there is no separate `NIXPKGS_REV` variable.
+- [ ] The registry is generated via the `flake-registry` parameter of `dockerTools.buildLayeredImage` (same pattern as upstream NixOS/nix `docker.nix`).
 - [ ] `nix registry list` as the `sandbox` user shows the pinned `nixpkgs` entry.
 - [ ] `nix run nixpkgs#hello` resolves to the pinned revision (not a floating channel).
-- [ ] The `sandbox` user cannot write to, delete, or replace this file.
+- [ ] Updating `flake.lock` updates both the build-time and runtime nixpkgs pin in one operation.
+- [ ] The registry file and its GC roots are managed by the Nix build expression.
 
 ### Immutability of `/etc/nix/` directory
 - [ ] `/etc/nix/` is owned by root with permissions that prevent the `sandbox` user from creating, deleting, or modifying files in it.
 
 ### Renovate integration
-- [ ] `renovate.json` includes a regex manager that detects the nixpkgs commit hash in `/etc/nix/registry.json` (or the Containerfile section that writes it).
-- [ ] The nixpkgs revision update is grouped with the existing container dependencies PR group.
+- [ ] `flake.lock` updates (via Renovate's nix manager) automatically update the runtime nixpkgs pin.
+- [ ] No separate regex manager is needed for the nixpkgs revision — it is tracked entirely through `flake.lock`.
 
 ### Integration tests
 - [ ] `/etc/nix/nix.conf` is owned by root and not writable by the `sandbox` user.
-- [ ] `/etc/nix/registry.json` is owned by root and not writable by the `sandbox` user.
 - [ ] `nix registry list` output contains the pinned `nixpkgs` flake reference.
 - [ ] The substituters configuration resolves to `cache.nixos.org` only (verified via `nix show-config | grep substituters`).
 

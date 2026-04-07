@@ -4,37 +4,35 @@
 PRD Capability Group: Dependency Management
 Behaviors covered:
 - Renovate opens dependency update PRs automatically, grouped by category.
-- Container dependencies (base image, gh CLI, rtk, uv, opencode, claude-code) are grouped into a single PR.
+- Most container dependencies are managed through the `flake.lock` nixpkgs pin.
+- Custom Nix derivations for opencode and rtk have version strings and SHA256 hashes tracked by Renovate regex managers.
+- The claude-code npm version is tracked by a Renovate regex manager.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
-- Dependency versions are pinned but no longer verified via SHA256 checksums; version pinning over TLS is the trust model for all Containerfile dependencies.
 
 ## Summary
-A `renovate.json` at the repository root configures automated dependency update PRs. Regex managers handle the custom version patterns in the Containerfile (gh, rtk, uv, claude-code). Built-in managers handle the base image, flake.lock, and GitHub Actions. PRs are grouped by category to reduce noise. SHA256 checksums are removed from the Containerfile to enable clean version bumps.
+A `renovate.json` at the repository root configures automated dependency update PRs. The `flake.lock` update handles most package versions (everything from nixpkgs). Regex managers target the custom Nix derivation files in `packages/` for opencode and rtk version+hash bumps, and the claude-code npm version in the container image expression. PRs are grouped by category to reduce noise.
 
 ## Acceptance Criteria
 
 ### Renovate configuration
 - [ ] `renovate.json` exists at the repository root.
-- [ ] Renovate is configured with regex managers for each Containerfile dependency:
-  - `gh` CLI: matches the version in the curl URL and tarball path (e.g., `v2.89.0`).
-  - `rtk`: matches the version in the curl URL and tarball path (e.g., `v0.34.2`).
-  - `opencode`: matches the version in the GitHub releases download URL (e.g., `v1.3.11`).
-  - `uv`: matches the image tag and digest in the `COPY --from` directive (e.g., `0.11.2@sha256:...`).
-  - `claude-code`: matches the npm version in the `npm install` command (e.g., `2.1.87`).
-- [ ] The Dockerfile manager handles `debian:bookworm-slim` base image updates.
 - [ ] The nix manager handles `flake.lock` updates via `nix flake update`.
+- [ ] Renovate is configured with regex managers for custom derivation dependencies:
+  - `opencode`: matches the version string and SHA256 hashes in `packages/opencode.nix` against the `github-releases` datasource for `anomalyco/opencode`.
+  - `rtk`: matches the version string and SHA256 hashes in `packages/rtk.nix` against the `github-releases` datasource for `rtk-ai/rtk`.
+  - `claude-code`: matches the npm version string in the container image Nix expression against the `npm` datasource.
 - [ ] The github-actions manager handles action version updates in workflow files.
 
 ### Grouping
-- [ ] Container dependencies (base image, gh, rtk, uv, opencode, claude-code) are grouped into a single PR.
-- [ ] Nix flake inputs are grouped into a single PR.
+- [ ] Nix flake inputs (`flake.lock`) are grouped into a single PR.
+- [ ] Custom derivation dependencies (opencode, rtk, claude-code) are grouped into a single PR.
 - [ ] GitHub Actions versions are grouped into a single PR.
 
-### Containerfile changes (SHA256 removal)
-- [ ] The `gh` CLI install step removes the `sha256sum -c` verification and the hardcoded checksum; the curl download is version-pinned only.
-- [ ] The `rtk` install step removes the `sha256sum -c` verification and the hardcoded checksum; the curl download is version-pinned only.
-- [ ] The Containerfile comments are updated to reflect the new trust model (version pinning over TLS).
+### Renovate-compatible comments
+- [ ] `packages/opencode.nix` contains Renovate-compatible comments (e.g., `# renovate: datasource=github-releases depName=anomalyco/opencode`) near the version string.
+- [ ] `packages/rtk.nix` contains Renovate-compatible comments near the version string.
+- [ ] The claude-code version string has a Renovate-compatible comment.
 
 ### Renovate PR integration
 - [ ] Renovate PRs go through the same `pr-checks.yml` pipeline as human PRs.
@@ -45,4 +43,4 @@ A `renovate.json` at the repository root configures automated dependency update 
 
 ## Out of Scope
 - Auto-merging Renovate PRs (all PRs require human review).
-- SHA256 checksum computation in post-update scripts.
+- Renovate configuration for Dockerfile-based dependencies (Containerfile no longer exists).
