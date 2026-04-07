@@ -350,10 +350,17 @@
           }
           // linuxPackages; # adds opencode and rtk on Linux systems
 
-          apps.default = {
-            type = "app";
-            program = "${self'.packages.default}/bin/agent-sandbox";
-          };
+          apps.default =
+            let
+              wrapper = pkgs.writeShellScript "agent-sandbox-run" ''
+                export AGENT_SANDBOX_IMAGE_PATH="${self'.packages.container-image}"
+                exec "${self'.packages.default}/bin/agent-sandbox" "$@"
+              '';
+            in
+            {
+              type = "app";
+              program = toString wrapper;
+            };
 
           devShells.default = pkgs.mkShell {
             packages = [
