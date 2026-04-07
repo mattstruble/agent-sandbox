@@ -3,7 +3,7 @@
 ## Source
 PRD Capability Group: Testing & Validation — Container Integration Tests
 Behaviors covered:
-- Expected binaries (`opencode`, `claude`, `rtk`, `gh`, `uv`, `node`, `git`, `nix`) exist and are executable inside the built image.
+- Expected binaries (`opencode`, `rtk`, `gh`, `uv`, `node`, `git`, `nix`) exist and are executable inside the built image.
 - The `sandbox` user exists with UID 1000 and correct permissions.
 - Firewall allows outbound TCP 80 and 443.
 - Firewall blocks non-allowed ports (e.g., 8080, 3000).
@@ -20,7 +20,6 @@ Bats integration tests that drive `podman run` / `docker run` against the Nix-bu
 
 ### Image contents
 - [ ] `opencode` binary exists and is executable (`which opencode` succeeds).
-- [ ] `claude` binary exists and is executable (`which claude` succeeds).
 - [ ] `rtk` binary exists and is executable (`which rtk` succeeds).
 - [ ] `gh` binary exists and is executable (`which gh` succeeds).
 - [ ] `uv` binary exists and is executable (`which uv` succeeds).

@@ -13,7 +13,8 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - As a developer, I want to start a sandbox from any directory with a single command, so that the workflow is as fast as running the agent directly.
 - As a developer, I want to run multiple sandboxed agent sessions in parallel on different projects, so that I can parallelize work without sessions interfering with each other.
 - As a developer, I want my git identity, SSH credentials, and API keys available inside the sandbox, so that the agent can perform the same operations it could outside the sandbox.
-- As a developer, I want a pre-built container image available on GHCR, so that I can run the sandbox without Nix and without waiting for a local build.
+- As a developer without Nix, I want a pre-built container image available on GHCR, so that I can run the sandbox without Nix and without waiting for a local build.
+- As a Nix user on macOS, I want `nix run` to build and load the container image locally, so that I can use the sandbox without depending on GHCR or a published image.
 - As a maintainer, I want automated semver releases driven by conventional commits, so that versioning is consistent and changelogs are generated automatically.
 - As a maintainer, I want PRs to be linted, scanned, and validated before merge, so that broken or insecure changes don't reach main.
 - As a maintainer, I want dependency update PRs opened automatically, so that pinned versions stay current without manual tracking.
@@ -73,7 +74,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 - The container image is built entirely from Nix — all system packages (git, curl, iptables, chrony, jq, nodejs, etc.) are provided by nixpkgs. There is no Debian base layer, no apt-get, and no secondary package manager.
 - Custom derivations in the project's Nix expressions provide binaries not available in nixpkgs (opencode, rtk). These derivations use `fetchurl` with per-architecture URLs and SHA256 hashes.
-- `claude-code` is installed via `npm install -g --ignore-scripts` using the Nix-provided nodejs. The `--ignore-scripts` flag prevents post-install scripts from executing during the image build.
+- The default container image ships OpenCode only. Claude Code support is a future addition and not included in the default image.
 - Nix is pre-installed inside the container at build time so the agent can install and run arbitrary software packages on demand without root access.
 - The agent can run any package from nixpkgs via `nix run nixpkgs#<package>` or enter a shell with packages via `nix shell nixpkgs#<package>`.
 - The agent can run packages from arbitrary flake URIs (e.g., `nix run github:user/repo#thing`); there is no restriction on which flake sources the agent can use.
@@ -84,15 +85,18 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Nix configuration (`/etc/nix/nix.conf`) and the flake registry are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 - The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are not persisted across container restarts. Each session starts with a clean store containing only the Nix tooling itself.
 - The Nix installation works on both amd64 and arm64 architectures — the Nix expression produces architecture-appropriate images.
-- The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH. The Nix instructions text is stored as a static file in the image, read by the entrypoint at runtime.
+- The entrypoint appends Nix usage instructions to the active agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH. The Nix instructions text is stored as a static file in the image, read by the entrypoint at runtime.
 - A shell `command_not_found_handle` in `/home/sandbox/.bashrc` suggests `nix run nixpkgs#<cmd>` when an unrecognized command is executed, providing a reactive fallback hint for both agents.
 
 ### Image Management
 
 - The container image is built entirely from Nix using `dockerTools.buildLayeredImage` — there is no Containerfile. All packages, user configuration, and static files are declared in the project's `flake.nix` and associated Nix expressions.
-- The image is pulled from GHCR on first use when no matching local image exists. The launcher does not build images locally.
-- The image tag matches the launcher's baked-in version. When the launcher runs, it checks for `agent-sandbox:<version>` locally and pulls `ghcr.io/mstruble/agent-sandbox:<version>` if absent.
-- `--pull` forces a re-pull of the image from GHCR regardless of local cache state.
+- The container image (`packages.<system>.container-image`) is buildable on all supported systems (x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin). On darwin, it cross-compiles to Linux via a configured Linux builder.
+- The launcher sources the container image through a three-tier chain: (1) if `agent-sandbox:<version>` exists in the local container runtime, use it; (2) if the `AGENT_SANDBOX_IMAGE_PATH` environment variable is set, load the image tarball from that path into the runtime; (3) fall back to pulling `ghcr.io/mstruble/agent-sandbox:<version>` from GHCR.
+- For Nix users, the `apps.default` wrapper and Nix modules set `AGENT_SANDBOX_IMAGE_PATH` to the Nix-built container image store path, bypassing GHCR entirely.
+- For non-Nix users (installed via `install.sh`), GHCR pull is the sole image source.
+- The image tag matches the launcher's baked-in version. When the launcher runs, it checks for `agent-sandbox:<version>` locally before attempting other sources.
+- `--pull` forces a re-pull of the image from GHCR regardless of local cache state or `AGENT_SANDBOX_IMAGE_PATH`.
 - `--prune` removes locally cached images whose tag does not match the launcher's version.
 
 ### Distribution
@@ -120,12 +124,14 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 #### Nix Distribution
 
 - The tool is runnable without installation via `nix run github:mstruble/agent-sandbox`.
+- `nix run` loads the container image into the local container runtime and runs the launcher, with no GHCR dependency. The `apps.default` wrapper sets `AGENT_SANDBOX_IMAGE_PATH` to the Nix-built container image and execs the launcher.
 - The tool is installable into a user profile via `nix profile install github:mstruble/agent-sandbox`.
 - The tool is referenceable as a flake input from other Nix flakes.
 - The flake is structured using `flake-parts` to support both per-system outputs (packages, apps) and system-agnostic outputs (modules).
 - The flake exposes a NixOS module (`nixosModules.default`), a nix-darwin module (`darwinModules.default`), and a Home Manager module (`homeManagerModules.default`).
 - All three modules expose `programs.agent-sandbox.enable` to add the tool to the environment and `programs.agent-sandbox.package` to override the default package.
 - All three modules expose `programs.agent-sandbox.containerPackage` to specify the container runtime package. Defaults to `pkgs.podman` on Linux, `null` on darwin. When set, the package is added to the environment. When `null`, the user ensures a container runtime is available on PATH.
+- All three modules expose `programs.agent-sandbox.image` to specify the container image package. When set, the launcher is wrapped with `AGENT_SANDBOX_IMAGE_PATH` pointing to the image store path, enabling local image loading without GHCR. When `null`, the launcher falls back to GHCR pull.
 - The Home Manager module generates `~/.config/agent-sandbox/config.toml` from typed Nix options covering all config sections: default agent, extra network domains, extra environment variables, symlink behavior, extra mount paths, and resource limits.
 - When no settings are configured in the Home Manager module, no config file is generated (the launcher uses its built-in defaults).
 - The NixOS and nix-darwin modules do not manage agent-sandbox configuration.
@@ -154,7 +160,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Self-update version comparison logic is testable.
 
 #### Container Integration Tests
-- Expected binaries (`opencode`, `claude`, `rtk`, `gh`, `uv`, `node`, `git`, `nix`) exist and are executable inside the built image.
+- Expected binaries (`opencode`, `rtk`, `gh`, `uv`, `node`, `git`, `nix`) exist and are executable inside the built image.
 - The `sandbox` user exists with UID 1000 and correct permissions.
 - Firewall allows outbound TCP 80 and 443.
 - Firewall allows outbound UDP 123 (NTP) to pinned Cloudflare IPs only; NTP to non-pinned IPs is rejected.
@@ -182,7 +188,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 #### Test Infrastructure
 - Tests use bats-core with bats-assert and bats-support as the test framework.
 - A Makefile provides `test-unit`, `test-integration`, `test-e2e`, `test` (all), and `test-fast` (unit alias) targets.
-- Integration and e2e targets require the container image to be loaded locally (pulled from GHCR or loaded from a Nix build).
+- Integration and e2e targets require the container image to be loaded locally (built via `nix build .#container-image` on any supported system, or pulled from GHCR).
 - bats-core and helper libraries are provided via a Nix devShell in `flake.nix`.
 - Tests are tagged (`unit`, `integration`, `e2e`) to support selective execution via `bats --filter-tags`.
 - CI runs all test tiers after the image build step in `pr-checks.yml`.
