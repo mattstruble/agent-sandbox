@@ -40,6 +40,22 @@ let
     && cfg.settings.mounts.extraPaths == [ ]
     && cfg.settings.resources.memory == "8g"
     && cfg.settings.resources.cpus == 4;
+
+  # When image is set, wrap the launcher with AGENT_SANDBOX_IMAGE_PATH so the
+  # launcher loads the local image instead of pulling from GHCR.
+  actualPackage =
+    if cfg.image != null then
+      pkgs.symlinkJoin {
+        name = "agent-sandbox-wrapped";
+        paths = [ cfg.package ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          wrapProgram $out/bin/agent-sandbox \
+            --set AGENT_SANDBOX_IMAGE_PATH "${cfg.image}"
+        '';
+      }
+    else
+      cfg.package;
 in
 {
   options.programs.agent-sandbox = {
@@ -52,6 +68,13 @@ in
       default = if pkgs.stdenv.isLinux then pkgs.podman else null;
       defaultText = lib.literalExpression "if pkgs.stdenv.isLinux then pkgs.podman else null";
       description = "Container runtime package. Defaults to podman on Linux, null on darwin.";
+    };
+
+    image = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      defaultText = lib.literalExpression "null";
+      description = "Container image package. When set, the launcher is wrapped with AGENT_SANDBOX_IMAGE_PATH pointing to the image store path.";
     };
 
     settings = {
@@ -103,7 +126,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ] ++ lib.optional (cfg.containerPackage != null) cfg.containerPackage;
+    home.packages = [
+      actualPackage
+    ]
+    ++ lib.optional (cfg.containerPackage != null) cfg.containerPackage;
 
     xdg.configFile."agent-sandbox/config.toml" = lib.mkIf (!allDefaults) {
       source = tomlFormat.generate "agent-sandbox-config" configContent;
