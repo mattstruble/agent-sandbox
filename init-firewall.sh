@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 # init-firewall.sh — port-based network filter for agent-sandbox containers
 # Runs as root as the first step in entrypoint.sh, before any agent code.

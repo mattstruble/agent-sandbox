@@ -34,6 +34,13 @@
           lib = pkgs.lib;
           version = "0.1.0";
 
+          # nixpkgs instance with unfree allowed — used for pre-built binaries
+          # (opencode, rtk, claude-code) that have proprietary licenses.
+          pkgsUnfree = import nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
+
           # Runtime dependencies available to the launcher at runtime.
           # podman is included on Linux only — on macOS, users install Podman via
           # Homebrew (podman machine requires a native install) and the launcher
@@ -66,78 +73,313 @@
               # Exclude the flake itself (not needed in the derivation source)
               && !(baseName == "flake.nix");
           };
-        in
-        {
-          packages.default = pkgs.stdenv.mkDerivation {
-            pname = "agent-sandbox";
-            inherit version;
 
-            src = filteredSrc;
+          # nixpkgs revision from flake.lock — used to pin the flake registry
+          # inside the container so `nix run nixpkgs#<pkg>` resolves reproducibly.
+          nixpkgsRev = inputs.nixpkgs.rev;
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+          # Flake registry JSON pinning nixpkgs to the locked revision.
+          flakeRegistry = pkgs.writeText "registry.json" (
+            builtins.toJSON {
+              version = 2;
+              flakes = [
+                {
+                  from = {
+                    type = "indirect";
+                    id = "nixpkgs";
+                  };
+                  to = {
+                    type = "github";
+                    owner = "NixOS";
+                    repo = "nixpkgs";
+                    rev = nixpkgsRev;
+                  };
+                }
+              ];
+            }
+          );
 
-            # No configure or build steps needed — this is a pure shell script package.
-            dontConfigure = true;
-            dontBuild = true;
+          # claude-code installed via npm — version-pinned for reproducibility.
+          # Uses a fixed-output derivation so Nix can fetch from the npm registry
+          # during build (fixed-output derivations are allowed network access).
+          # renovate: datasource=npm depName=@anthropic-ai/claude-code
+          claudeCodeVersion = "2.1.87";
+          claudeCode = pkgsUnfree.stdenv.mkDerivation {
+            pname = "claude-code";
+            version = claudeCodeVersion;
 
-            # Restore original shebangs for container-only scripts.
-            # Nix's patchShebangs rewrites #!/usr/bin/env bash to a /nix/store
-            # path, but these scripts run inside the container where no Nix
-            # store exists.
-            postFixup = ''
-              sed -i '1s|^#!.*/bash$|#!/usr/bin/env bash|' \
-                $out/share/agent-sandbox/entrypoint.sh \
-                $out/share/agent-sandbox/init-firewall.sh
+            dontUnpack = true;
+
+            nativeBuildInputs = [ pkgsUnfree.nodejs ];
+
+            buildPhase = ''
+              export HOME=$(mktemp -d)
+              export npm_config_cache=$(mktemp -d)
+              mkdir -p $out
+              timeout 180 ${pkgsUnfree.nodejs}/bin/npm install -g \
+                --ignore-scripts \
+                --prefix $out \
+                @anthropic-ai/claude-code@${claudeCodeVersion}
             '';
 
-            installPhase = ''
-              runHook preInstall
+            installPhase = "true";
 
-              # Install support files (Containerfile, entrypoint.sh, init-firewall.sh)
-              mkdir -p $out/share/agent-sandbox
-              install -m 0644 Containerfile $out/share/agent-sandbox/
-              install -m 0755 entrypoint.sh $out/share/agent-sandbox/
-              install -m 0755 init-firewall.sh $out/share/agent-sandbox/
-
-              # Install the launcher script
-              mkdir -p $out/bin
-              install -m 0755 agent-sandbox.sh $out/bin/agent-sandbox
-
-              # Substitute @SHARE_DIR@ with the absolute Nix store path at build time.
-              # The launcher uses this to locate Containerfile and the other support files.
-              substituteInPlace $out/bin/agent-sandbox \
-                --replace-fail '@SHARE_DIR@' "$out/share/agent-sandbox"
-
-              # Substitute @VERSION@ with the package version at build time.
-              substituteInPlace $out/bin/agent-sandbox \
-                --replace-fail '@VERSION@' "${version}"
-
-              # Wrap the launcher so that:
-              #   1. Nix-provided bash 5.x is first on PATH (macOS ships bash 3.2;
-              #      the script is now compatible with bash 3.2+ but the Nix bash
-              #      is still preferred for consistency).
-              #   2. coreutils (sha256sum, cut, basename, etc.) and podman on Linux
-              #      are available without requiring them on the user's system PATH.
-              wrapProgram $out/bin/agent-sandbox \
-                --prefix PATH : ${lib.makeBinPath runtimeDeps}
-
-              runHook postInstall
-            '';
+            # Fixed-output hash allows network access during build.
+            # Run `nix build .#container-image` to obtain the correct hash.
+            outputHash = lib.fakeHash;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
 
             meta = {
-              description = "Sandboxed AI coding agent environments using Podman containers";
-              longDescription = ''
-                agent-sandbox wraps Podman (or Docker) to run AI coding agents (OpenCode,
-                Claude Code) in isolated containers with iptables-based network allowlists,
-                SSH agent forwarding, and deterministic container naming.
-              '';
-              homepage = "https://github.com/mstruble/agent-sandbox";
-              license = lib.licenses.mit;
-              maintainers = [ ];
-              platforms = lib.platforms.unix;
-              mainProgram = "agent-sandbox";
+              description = "Claude Code AI coding agent by Anthropic";
+              homepage = "https://www.npmjs.com/package/@anthropic-ai/claude-code";
+              license = lib.licenses.unfree;
+              platforms = lib.platforms.linux;
             };
           };
+
+          # Static files bundled into the image at /etc/agent-sandbox/
+          nixInstructionsFile = pkgs.writeText "nix-instructions.md" ''
+            # Runtime Package Management
+
+            This environment has Nix installed. When you need a tool that is not on
+            PATH (e.g., go, rustc, cargo, ripgrep, fd, yq, terraform, kubectl),
+            use `nix run nixpkgs#<package>` or
+            `nix shell nixpkgs#<package> --command <cmd>` instead of attempting
+            apt-get (which requires root you do not have).
+          '';
+
+          opencodePermissionsFile = pkgs.writeText "opencode-permissions.json" ''
+            {
+              "permission": {
+                "bash": "allow",
+                "edit": "allow",
+                "read": "allow",
+                "grep": "allow",
+                "webfetch": "allow"
+              }
+            }
+          '';
+
+          # Linux-only packages (pre-built binaries only available for Linux)
+          linuxPackages = lib.optionalAttrs pkgs.stdenv.isLinux (
+            let
+              opencode = pkgsUnfree.callPackage ./packages/opencode.nix { };
+              rtk = pkgsUnfree.callPackage ./packages/rtk.nix { };
+            in
+            {
+              inherit opencode rtk;
+
+              container-image = pkgsUnfree.dockerTools.buildLayeredImage {
+                name = "agent-sandbox";
+                tag = version;
+
+                contents = [
+                  pkgsUnfree.bash
+                  pkgsUnfree.curl
+                  pkgsUnfree.git
+                  pkgsUnfree.gnumake
+                  pkgsUnfree.su-exec
+                  pkgsUnfree.procps
+                  pkgsUnfree.findutils
+                  pkgsUnfree.coreutils
+                  pkgsUnfree.iptables
+                  pkgsUnfree.ipset
+                  pkgsUnfree.iproute2
+                  pkgsUnfree.bind.dnsutils
+                  pkgsUnfree.jq
+                  pkgsUnfree.cacert
+                  pkgsUnfree.xz
+                  pkgsUnfree.chrony
+                  pkgsUnfree.nodejs
+                  pkgsUnfree.gh
+                  pkgsUnfree.uv
+                  pkgsUnfree.nix
+                  opencode
+                  rtk
+                  claudeCode
+                  pkgsUnfree.dockerTools.caCertificates
+                  pkgsUnfree.dockerTools.usrBinEnv
+                ];
+
+                fakeRootCommands = ''
+                  # ── User/group database ──────────────────────────────────────────────
+                  mkdir -p etc
+                  printf 'root:x:0:0:root:/root:/bin/sh\nsandbox:x:1000:1000:sandbox:/home/sandbox:/bin/bash\n' \
+                    > etc/passwd
+                  printf 'root:x:0:\nsandbox:x:1000:\n' \
+                    > etc/group
+                  printf 'root:!:19000:0:99999:7:::\nsandbox:!:19000:0:99999:7:::\n' \
+                    > etc/shadow
+                  chmod 0640 etc/shadow
+
+                  # ── Home directory ───────────────────────────────────────────────────
+                  mkdir -p home/sandbox
+                  chown 1000:1000 home/sandbox
+
+                  # ── /nix owned by sandbox user ───────────────────────────────────────
+                  mkdir -p nix
+                  chown 1000:1000 nix
+
+                  # ── /workspace working directory ─────────────────────────────────────
+                  mkdir -p workspace
+                  chown 1000:1000 workspace
+
+                  # ── Nix configuration ────────────────────────────────────────────────
+                  mkdir -p etc/nix
+                  chmod 0755 etc/nix
+                  cat > etc/nix/nix.conf <<'NIXCONF'
+                  experimental-features = nix-command flakes
+                  sandbox = false
+                  warn-dirty = false
+                  accept-flake-config = false
+                  substituters = https://cache.nixos.org
+                  trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+                  NIXCONF
+                  chmod 0444 etc/nix/nix.conf
+
+                  # ── Flake registry (pinned nixpkgs) ──────────────────────────────────
+                  cp ${flakeRegistry} etc/nix/registry.json
+                  chmod 0444 etc/nix/registry.json
+
+                  # ── Chrony configuration ─────────────────────────────────────────────
+                  mkdir -p etc/chrony
+                  cat > etc/chrony/chrony.conf <<'CHRONYCONF'
+                  server 162.159.200.1 iburst
+                  server 162.159.200.123 iburst
+                  makestep 1 3
+                  port 0
+                  cmdport 0
+                  driftfile /var/lib/chrony/drift
+                  CHRONYCONF
+
+                  # ── Static agent-sandbox files ───────────────────────────────────────
+                  mkdir -p etc/agent-sandbox
+                  cp ${nixInstructionsFile} etc/agent-sandbox/nix-instructions.md
+                  cp ${opencodePermissionsFile} etc/agent-sandbox/opencode-permissions.json
+                  chmod 0444 etc/agent-sandbox/nix-instructions.md
+                  chmod 0444 etc/agent-sandbox/opencode-permissions.json
+
+                  # ── bashrc with command-not-found handler ────────────────────────────
+                  cat > home/sandbox/.bashrc <<'BASHRC'
+                  command_not_found_handle() {
+                      printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
+                      return 127
+                  }
+                  BASHRC
+                  chown 1000:1000 home/sandbox/.bashrc
+
+                  # ── Entrypoint and firewall scripts ──────────────────────────────────
+                  cp ${./entrypoint.sh} entrypoint.sh
+                  chmod 0755 entrypoint.sh
+                  cp ${./init-firewall.sh} init-firewall.sh
+                  chmod 0755 init-firewall.sh
+
+                  # ── Runtime var directories ──────────────────────────────────────────
+                  mkdir -p var/lib/chrony
+                  chown 1000:1000 var/lib/chrony
+                  mkdir -p tmp
+                  chmod 1777 tmp
+                '';
+
+                enableFakechroot = true;
+
+                config = {
+                  Entrypoint = [ "/entrypoint.sh" ];
+                  WorkingDir = "/workspace";
+                  Env = [
+                    "PATH=/home/sandbox/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                    "SSL_CERT_FILE=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
+                    "GIT_SSL_CAINFO=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
+                    "NIX_SSL_CERT_FILE=${pkgsUnfree.cacert}/etc/ssl/certs/ca-bundle.crt"
+                    "RTK_TELEMETRY_DISABLED=1"
+                    "HOME=/home/sandbox"
+                    "NIX_CONF_DIR=/etc/nix"
+                  ];
+                  Labels = {
+                    "org.opencontainers.image.title" = "agent-sandbox";
+                    "org.opencontainers.image.source" = "https://github.com/mstruble/agent-sandbox";
+                    "org.opencontainers.image.description" = "Sandboxed AI coding agent environment";
+                  };
+                };
+              };
+            }
+          );
+
+        in
+        {
+          packages = {
+            default = pkgs.stdenv.mkDerivation {
+              pname = "agent-sandbox";
+              inherit version;
+
+              src = filteredSrc;
+
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+
+              # No configure or build steps needed — this is a pure shell script package.
+              dontConfigure = true;
+              dontBuild = true;
+
+              # Restore original shebangs for container-only scripts.
+              # Nix's patchShebangs rewrites #!/usr/bin/env bash to a /nix/store
+              # path, but these scripts run inside the container where no Nix
+              # store exists.
+              postFixup = ''
+                sed -i '1s|^#!.*/bash$|#!/usr/bin/env bash|' \
+                  $out/share/agent-sandbox/entrypoint.sh \
+                  $out/share/agent-sandbox/init-firewall.sh
+              '';
+
+              installPhase = ''
+                runHook preInstall
+
+                # Install support files (entrypoint.sh, init-firewall.sh)
+                mkdir -p $out/share/agent-sandbox
+                install -m 0755 entrypoint.sh $out/share/agent-sandbox/
+                install -m 0755 init-firewall.sh $out/share/agent-sandbox/
+
+                # Install the launcher script
+                mkdir -p $out/bin
+                install -m 0755 agent-sandbox.sh $out/bin/agent-sandbox
+
+                # Substitute @SHARE_DIR@ with the absolute Nix store path at build time.
+                # The launcher uses this to locate the other support files.
+                substituteInPlace $out/bin/agent-sandbox \
+                  --replace-fail '@SHARE_DIR@' "$out/share/agent-sandbox"
+
+                # Substitute @VERSION@ with the package version at build time.
+                substituteInPlace $out/bin/agent-sandbox \
+                  --replace-fail '@VERSION@' "${version}"
+
+                # Wrap the launcher so that:
+                #   1. Nix-provided bash 5.x is first on PATH (macOS ships bash 3.2;
+                #      the script is now compatible with bash 3.2+ but the Nix bash
+                #      is still preferred for consistency).
+                #   2. coreutils (sha256sum, cut, basename, etc.) and podman on Linux
+                #      are available without requiring them on the user's system PATH.
+                wrapProgram $out/bin/agent-sandbox \
+                  --prefix PATH : ${lib.makeBinPath runtimeDeps}
+
+                runHook postInstall
+              '';
+
+              meta = {
+                description = "Sandboxed AI coding agent environments using Podman containers";
+                longDescription = ''
+                  agent-sandbox wraps Podman (or Docker) to run AI coding agents (OpenCode,
+                  Claude Code) in isolated containers with iptables-based network allowlists,
+                  SSH agent forwarding, and deterministic container naming.
+                '';
+                homepage = "https://github.com/mstruble/agent-sandbox";
+                license = lib.licenses.mit;
+                maintainers = [ ];
+                platforms = lib.platforms.unix;
+                mainProgram = "agent-sandbox";
+              };
+            };
+          }
+          // linuxPackages;
 
           apps.default = {
             type = "app";
@@ -152,6 +394,7 @@
               pkgs.shellcheck
               pkgs.nixfmt
               pkgs.gnumake
+              pkgs.vulnix
             ];
 
             shellHook = ''

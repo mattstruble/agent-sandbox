@@ -24,7 +24,7 @@ log "Starting sandbox for agent: $AGENT"
 
 # ─── Phase 1: Root operations ─────────────────────────────────────────────────
 # The container starts as root so the firewall can be established without sudo.
-# After firewall setup, we re-exec this script as the sandbox user via gosu.
+# After firewall setup, we re-exec this script as the sandbox user via su-exec.
 
 if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 	log "Running firewall setup..."
@@ -40,7 +40,7 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 
 	# Re-exec as sandbox user; _SANDBOX_PHASE2 prevents infinite loop
 	log "Dropping to sandbox user..."
-	exec gosu sandbox env _SANDBOX_PHASE2=1 "$0"
+	exec su-exec sandbox env _SANDBOX_PHASE2=1 "$0"
 fi
 
 # ─── Phase 2: Sandbox operations (runs as sandbox user) ──────────────────────
@@ -76,15 +76,13 @@ fi
 # Appended after staging so the host file content is preserved.
 # Creates the file if it does not exist (e.g., host had no config mounted).
 
-NIX_INSTRUCTIONS='
-# Runtime Package Management
-
-This environment has Nix installed. When you need a tool that is not on
-PATH (e.g., go, rustc, cargo, ripgrep, fd, yq, terraform, kubectl),
-use `nix run nixpkgs#<package>` or
-`nix shell nixpkgs#<package> --command <cmd>` instead of attempting
-apt-get (which requires root you do not have).
-'
+NIX_INSTRUCTIONS_FILE="/etc/agent-sandbox/nix-instructions.md"
+if [[ -f "$NIX_INSTRUCTIONS_FILE" ]]; then
+	NIX_INSTRUCTIONS=$(cat "$NIX_INSTRUCTIONS_FILE")
+else
+	warn "Nix instructions file not found at $NIX_INSTRUCTIONS_FILE"
+	NIX_INSTRUCTIONS=""
+fi
 
 mkdir -p ~/.config/opencode
 if ! printf '%s' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
@@ -126,8 +124,13 @@ if [[ -f "$OPENCODE_CONFIG" ]]; then
 		warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
 	fi
 else
-	# File does not exist — create it with just the permission object
-	cat >"$OPENCODE_CONFIG" <<'EOF'
+	# File does not exist — copy default from static file
+	if [[ -f /etc/agent-sandbox/opencode-permissions.json ]]; then
+		cp /etc/agent-sandbox/opencode-permissions.json "$OPENCODE_CONFIG"
+		log "Created $OPENCODE_CONFIG from default permissions."
+	else
+		warn "Default permissions file not found — creating inline fallback."
+		cat >"$OPENCODE_CONFIG" <<'EOF'
 {
   "permission": {
     "bash": "allow",
@@ -138,7 +141,8 @@ else
   }
 }
 EOF
-	log "Created $OPENCODE_CONFIG with permission overrides."
+		log "Created $OPENCODE_CONFIG with permission overrides."
+	fi
 fi
 
 # ─── Step 5: Initialize rtk for the active agent ──────────────────────────────
@@ -164,13 +168,11 @@ fi
 cd /workspace || die "/workspace is not accessible — check that the workspace mount succeeded."
 
 if [[ "$AGENT" == "opencode" ]]; then
-	# opencode installs to ~/.opencode/bin/, not onto $PATH
-	OPENCODE_BIN="$HOME/.opencode/bin/opencode"
-	if [[ ! -x "$OPENCODE_BIN" ]]; then
-		die "opencode binary not found at $OPENCODE_BIN"
+	if ! command -v opencode &>/dev/null; then
+		die "opencode binary not found in PATH"
 	fi
 	log "Exec'ing opencode..."
-	exec "$OPENCODE_BIN"
+	exec opencode
 else
 	if ! command -v claude &>/dev/null; then
 		die "claude binary not found in PATH"
