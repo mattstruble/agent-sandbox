@@ -40,41 +40,48 @@ jobs:
           fi
           echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for SHA-tagged image to be available
+      - name: Wait for SHA-tagged manifest and arch tags to be available
         env:
-          IMAGE: ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
+          SHA: ${{ github.sha }}
         run: |
           # publish-image.yml may still be running when this workflow fires.
           # Retry for up to 30 minutes (30 attempts × 60s).
+          # We check the combined manifest AND both arch-specific tags, since
+          # the retag steps reference the arch tags directly.
+          BASE="ghcr.io/mstruble/agent-sandbox"
           for i in $(seq 1 30); do
-            if docker pull "${IMAGE}"; then
-              echo "Image available after attempt ${i}"
+            if docker manifest inspect "${BASE}:${SHA}" > /dev/null 2>&1 && \
+               docker manifest inspect "${BASE}:${SHA}-amd64" > /dev/null 2>&1 && \
+               docker manifest inspect "${BASE}:${SHA}-arm64" > /dev/null 2>&1; then
+              echo "Manifest and arch tags available after attempt ${i}"
               exit 0
             fi
-            echo "Attempt ${i}/30: image not yet available, retrying in 60s..."
+            echo "Attempt ${i}/30: not yet available, retrying in 60s..."
             sleep 60
           done
-          echo "ERROR: image ${IMAGE} not available after 30 minutes" >&2
+          echo "ERROR: manifest ${BASE}:${SHA} (or arch tags) not available after 30 minutes" >&2
           exit 1
 
       - name: Retag as semver
         env:
           SEMVER: ${{ steps.parse-tag.outputs.semver }}
           SHA: ${{ github.sha }}
-        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:${SEMVER}
+        run: |
+          docker manifest create \
+            ghcr.io/mstruble/agent-sandbox:${SEMVER} \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-amd64 \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-arm64
+          docker manifest push ghcr.io/mstruble/agent-sandbox:${SEMVER}
 
       - name: Retag as latest
         env:
           SHA: ${{ github.sha }}
-        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:latest
-
-      - name: Push semver tag
-        env:
-          SEMVER: ${{ steps.parse-tag.outputs.semver }}
-        run: docker push ghcr.io/mstruble/agent-sandbox:${SEMVER}
-
-      - name: Push latest tag
-        run: docker push ghcr.io/mstruble/agent-sandbox:latest
+        run: |
+          docker manifest create \
+            ghcr.io/mstruble/agent-sandbox:latest \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-amd64 \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-arm64
+          docker manifest push ghcr.io/mstruble/agent-sandbox:latest
 
   publish-tarball:
     name: Publish Release Tarball
@@ -124,14 +131,24 @@ jobs:
           [[ -s "${STAGING}/bin/agent-sandbox" ]] \
             || { echo "ERROR: agent-sandbox binary is empty after substitution" >&2; exit 1; }
 
-          cp Containerfile entrypoint.sh init-firewall.sh \
+          cp entrypoint.sh init-firewall.sh \
             "${STAGING}/share/agent-sandbox/"
 
           chmod +x "${STAGING}/bin/agent-sandbox"
 
           tar czf "${STAGING}.tar.gz" "${STAGING}/"
 
+      - name: Generate SHA256SUMS
+        env:
+          VERSION: ${{ steps.parse-tag.outputs.semver }}
+        run: |
+          sha256sum "agent-sandbox-${VERSION}.tar.gz" install.sh > SHA256SUMS \
+            || { echo "ERROR: sha256sum failed" >&2; rm -f SHA256SUMS; exit 1; }
+
       - name: Upload tarball to release
         env:
           VERSION: ${{ steps.parse-tag.outputs.semver }}
         run: gh release upload "${GITHUB_REF_NAME}" "agent-sandbox-${VERSION}.tar.gz" --clobber
+
+      - name: Upload SHA256SUMS to release
+        run: gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber

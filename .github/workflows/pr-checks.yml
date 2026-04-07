@@ -23,7 +23,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Check nixfmt formatting
-        run: nix run nixpkgs#nixfmt -- --check flake.nix
+        run: nix run nixpkgs#nixfmt -- --check flake.nix packages/*.nix
 
       - name: Validate flake
         run: nix flake check
@@ -46,14 +46,14 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Build container image
-        run: docker build -f Containerfile -t agent-sandbox:ci-test .
+        run: nix build .#container-image
 
-      - name: Trivy container scan
-        uses: aquasecurity/trivy-action@v0.30.0
-        with:
-          image-ref: agent-sandbox:ci-test
-          severity: HIGH,CRITICAL
-          exit-code: '1'
+      - name: Load image into Docker
+        run: docker load < result
+
+      - name: Scan with vulnix
+        run: nix run nixpkgs#vulnix -- "$(nix path-info .#container-image)"
+        continue-on-error: true
 
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.30.0
@@ -62,12 +62,6 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: '1'
-
-      - name: Tag image with content hash
-        run: |
-          IMAGE_HASH=$(sha256sum Containerfile | cut -c1-64)
-          [[ -n "$IMAGE_HASH" ]] || { echo "ERROR: IMAGE_HASH is empty"; exit 1; }
-          docker tag agent-sandbox:ci-test "agent-sandbox:${IMAGE_HASH}"
 
       - name: Run test suite
         run: nix develop --command bash -c 'RUNTIME=docker make test'

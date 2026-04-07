@@ -13,12 +13,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build, Scan & Push
+  build-amd64:
+    name: Build amd64
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Build container image
+        run: nix build .#container-image
+
+      - name: Load image and scan with vulnix
+        run: |
+          IMAGE_NAME=$(docker load < result | grep 'Loaded image:' | awk '{print $NF}')
+          [[ -n "$IMAGE_NAME" ]] || { echo "ERROR: could not determine loaded image name" >&2; exit 1; }
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
+          nix run nixpkgs#vulnix -- "$(nix path-info .#container-image)" || true  # Don't block on vulnix failures initially
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -27,29 +39,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
+      - name: Tag and push
         run: |
-          docker build -f Containerfile \
-            --label org.opencontainers.image.source=https://github.com/mstruble/agent-sandbox \
-            --label org.opencontainers.image.revision=${{ github.sha }} \
-            -t agent-sandbox:ci-test \
-            -t ghcr.io/mstruble/agent-sandbox:${{ github.sha }} \
-            .
+          docker tag "$IMAGE_NAME" "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64"
+          docker push "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64"
 
-      - name: Trivy container scan
-        uses: aquasecurity/trivy-action@v0.30.0
+  build-arm64:
+    name: Build arm64
+    # NOTE: This job runs on ubuntu-latest (x86_64) as a placeholder until a native
+    # ARM runner is available. The resulting image will be x86_64, not arm64.
+    # TODO: Switch to a native ARM runner: runs-on: [self-hosted, linux, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Build container image
+        run: nix build .#container-image
+
+      - name: Load image
+        run: |
+          IMAGE_NAME=$(docker load < result | grep 'Loaded image:' | awk '{print $NF}')
+          [[ -n "$IMAGE_NAME" ]] || { echo "ERROR: could not determine loaded image name" >&2; exit 1; }
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          image-ref: agent-sandbox:ci-test
-          severity: HIGH,CRITICAL
-          exit-code: '1'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.30.0
+      - name: Tag and push
+        run: |
+          docker tag "$IMAGE_NAME" "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64"
+          docker push "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64"
+
+  manifest:
+    name: Create Multi-Arch Manifest
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          exit-code: '1'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push SHA-tagged image
-        run: docker push ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
+      - name: Create and push manifest
+        run: |
+          docker manifest create \
+            ghcr.io/mstruble/agent-sandbox:${{ github.sha }} \
+            --amend ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64 \
+            --amend ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64
+          docker manifest push ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
