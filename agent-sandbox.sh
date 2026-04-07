@@ -41,14 +41,14 @@ Usage: agent-sandbox [OPTIONS] [WORKSPACE]
 
 Options:
   -a, --agent <name>       Agent to run: opencode (default) or claude
-  -b, --build              Force rebuild image before running
+  -b, --pull               Force re-pull image from GHCR before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories (.ssh, .gnupg, etc.)
   --mount <path>           Mount an extra host path read-only (repeatable; append :rw for read-write)
   --no-ssh                 Skip SSH agent socket forwarding
   --list                   List running agent-sandbox containers
   --stop                   Stop sandbox(es) for the given/current workspace
-  --prune                  Remove old agent-sandbox images, keeping only the current hash
+  --prune                  Remove old agent-sandbox images, keeping only the current version
   --update                 Update to the latest version
   -v, --version            Print version and exit
   -h, --help               Show help
@@ -65,7 +65,7 @@ Examples:
   agent-sandbox --mount ~/.kube        # mount kubectl config read-only
   agent-sandbox --mount ~/data:rw      # mount a directory read-write
   agent-sandbox --no-ssh               # skip SSH agent forwarding
-  agent-sandbox --build                # force image rebuild, then run
+  agent-sandbox --pull                 # force image re-pull, then run
   agent-sandbox --list                 # show running sandboxes
   agent-sandbox --stop                 # stop all sandboxes for current directory
   agent-sandbox --stop --agent claude  # stop only the claude sandbox
@@ -82,7 +82,7 @@ EOF
 parse_args() {
 	OPT_AGENT=""
 	OPT_AGENT_EXPLICIT="" # set only when --agent is passed on CLI; used for --stop dispatch
-	OPT_BUILD=false
+	OPT_PULL=false
 	OPT_FOLLOW_SYMLINKS=false
 	OPT_FOLLOW_ALL_SYMLINKS=false
 	OPT_NO_SSH=false
@@ -103,8 +103,8 @@ parse_args() {
 			OPT_AGENT_EXPLICIT="$2"
 			shift 2
 			;;
-		-b | --build)
-			OPT_BUILD=true
+		-b | --pull)
+			OPT_PULL=true
 			shift
 			;;
 		--follow-symlinks)
@@ -503,31 +503,29 @@ compute_container_name() {
 }
 
 # ---------------------------------------------------------------------------
-# Containerfile hash / image management
+# Image management (pull from GHCR)
 # ---------------------------------------------------------------------------
 
-CONTAINERFILE="${SHARE_DIR}/Containerfile"
+GHCR_IMAGE="ghcr.io/mstruble/agent-sandbox"
 RUNTIME=""
 
-compute_containerfile_hash() {
-	if [[ ! -f "$CONTAINERFILE" ]]; then
-		die "Containerfile not found at '$CONTAINERFILE'. Is SHARE_DIR set correctly?"
-	fi
-	sha256sum "$CONTAINERFILE" | cut -c1-64
-}
-
-image_exists() {
+image_exists_locally() {
 	local tag="$1"
 	local result
 	result=$("$RUNTIME" images -q "agent-sandbox:${tag}" 2>/dev/null || true)
 	[[ -n "$result" ]]
 }
 
-build_image() {
+pull_image() {
 	local tag="$1"
-	log "Building image agent-sandbox:${tag}..."
-	"$RUNTIME" build -t "agent-sandbox:${tag}" -f "$CONTAINERFILE" "$SHARE_DIR"
-	log "Image built: agent-sandbox:${tag}"
+	log "Pulling image ${GHCR_IMAGE}:${tag}..."
+	if ! "$RUNTIME" pull "${GHCR_IMAGE}:${tag}"; then
+		die "Failed to pull image ${GHCR_IMAGE}:${tag}. Check your internet connection and that the image exists."
+	fi
+	# Tag locally so we can reference it as agent-sandbox:<version> everywhere
+	"$RUNTIME" tag "${GHCR_IMAGE}:${tag}" "agent-sandbox:${tag}" ||
+		die "Failed to tag ${GHCR_IMAGE}:${tag} as agent-sandbox:${tag}"
+	log "Image pulled and tagged: agent-sandbox:${tag}"
 }
 
 # ---------------------------------------------------------------------------
@@ -583,10 +581,7 @@ do_stop() {
 # ---------------------------------------------------------------------------
 
 do_prune() {
-	local current_hash
-	current_hash=$(compute_containerfile_hash)
-
-	log "Current Containerfile hash: ${current_hash}"
+	log "Current version: ${VERSION}"
 	log "Pruning old agent-sandbox images..."
 
 	# List all agent-sandbox images
@@ -602,7 +597,7 @@ do_prune() {
 	while IFS= read -r image; do
 		[[ -z "$image" ]] && continue
 		local tag="${image#agent-sandbox:}"
-		if [[ "$tag" == "$current_hash" ]]; then
+		if [[ "$tag" == "$VERSION" ]]; then
 			log "Keeping current image: $image"
 			continue
 		fi
@@ -898,6 +893,14 @@ main() {
 
 	if $OPT_LIST; then do_list; fi
 	if $OPT_STOP; then do_stop "${OPT_WORKSPACE}" "${OPT_AGENT_EXPLICIT}"; fi
+
+	# Guard against running from an uninstalled source checkout where @VERSION@
+	# was never substituted. --prune uses $VERSION to decide which image to keep,
+	# so it must fire before the prune dispatch (and before image management below).
+	if [[ "$VERSION" == "@VERSION@" ]]; then
+		die "VERSION was not substituted at build time. Set AGENT_SANDBOX_VERSION or install via the official installer."
+	fi
+
 	if $OPT_PRUNE; then do_prune; fi
 
 	# ---------------------------------------------------------------------------
@@ -916,11 +919,10 @@ main() {
 	# Image management
 	# ---------------------------------------------------------------------------
 
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+	IMAGE_TAG="agent-sandbox:${VERSION}"
 
-	if $OPT_BUILD || ! image_exists "$IMAGE_HASH"; then
-		build_image "$IMAGE_HASH"
+	if $OPT_PULL || ! image_exists_locally "$VERSION"; then
+		pull_image "$VERSION"
 	fi
 
 	# ---------------------------------------------------------------------------
