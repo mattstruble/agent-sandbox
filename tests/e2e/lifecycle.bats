@@ -123,16 +123,17 @@ _precompute_container_name() {
 # Create a temporary agent script that runs the given commands and exits.
 # Prints the path to the created script.
 #
-# Usage: FAKE_AGENT="$(_make_verify_agent 'cat /workspace/file.txt')"
+# The commands string is written literally (no shell expansion) so that
+# variable references like ${AGENT:-unset} and $(pwd) are evaluated inside
+# the container at runtime, not in the test-runner shell at script-creation time.
+#
+# Usage: FAKE_AGENT="$(_make_verify_agent 'echo "AGENT_VALUE: ${AGENT:-unset}"')"
 _make_verify_agent() {
 	local commands="$1"
 	local agent_script
 	agent_script="$(make_temp)"
 	TEST_TMPFILES+=("$agent_script")
-	cat > "$agent_script" <<EOF
-#!/usr/bin/env bash
-$commands
-EOF
+	printf '#!/usr/bin/env bash\n%s\n' "$commands" > "$agent_script"
 	chmod +x "$agent_script"
 	echo "$agent_script"
 }

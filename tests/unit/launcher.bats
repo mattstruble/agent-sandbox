@@ -1840,9 +1840,6 @@ echo 'installer ran'
     rm -rf "$extra_dir"
     trap - EXIT
 
-    local resolved
-    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
-
     # Should contain a :rw mount (not :ro)
     local found_rw=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -1999,6 +1996,11 @@ echo 'installer ran'
     # shellcheck disable=SC2064
     trap "rm -rf '$extra_dir'" EXIT
 
+    # Resolve before calling collect_extra_mounts (while the dir exists)
+    # so the resolved path matches what collect_extra_mounts stores in MOUNT_FLAGS.
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
     # Same path appears in both CLI mounts and config paths
     OPT_EXTRA_MOUNTS=("$extra_dir")
     CFG_EXTRA_PATHS=("$extra_dir")
@@ -2009,9 +2011,6 @@ echo 'installer ran'
 
     rm -rf "$extra_dir"
     trap - EXIT
-
-    local resolved
-    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
 
     # Count occurrences of the path in MOUNT_FLAGS
     local count=0
