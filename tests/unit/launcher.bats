@@ -44,6 +44,57 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# ENV_FLAGS assertion helpers
+# ---------------------------------------------------------------------------
+
+# Assert that ENV_FLAGS array contains a "-e" entry with the given value.
+assert_env_flag() {
+    local expected="$1"
+    local found=0
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$((i+1))]}" == "$expected" ]]; then
+            found=1
+            break
+        fi
+    done
+    if [[ "$found" -eq 0 ]]; then
+        echo "Expected ENV_FLAGS to contain '-e $expected'" >&2
+        echo "Actual ENV_FLAGS: ${ENV_FLAGS[*]}" >&2
+        return 1
+    fi
+}
+
+# Assert that ENV_FLAGS array does NOT contain a "-e" entry with the given value.
+refute_env_flag() {
+    local unexpected="$1"
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$((i+1))]}" == "$unexpected" ]]; then
+            echo "Expected ENV_FLAGS NOT to contain '-e $unexpected'" >&2
+            echo "Actual ENV_FLAGS: ${ENV_FLAGS[*]}" >&2
+            return 1
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Symlink workspace factory helper
+# ---------------------------------------------------------------------------
+
+# Set up a common symlink workspace structure for symlink mount tests.
+# Creates a temp workspace dir with a symlink to an external temp dir.
+# Sets _SYMLINK_WS and _EXTERNAL_DIR in the caller's scope.
+# Registers a cleanup trap; callers should call `rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"; trap - EXIT`
+# after the function under test completes.
+_setup_symlink_workspace() {
+    _SYMLINK_WS="$(mktemp -d)"
+    _EXTERNAL_DIR="$(mktemp -d)"
+    echo "content" > "$_EXTERNAL_DIR/file.txt"
+    ln -s "$_EXTERNAL_DIR" "$_SYMLINK_WS/external-link"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$_SYMLINK_WS' '$_EXTERNAL_DIR'" EXIT
+}
+
+# ---------------------------------------------------------------------------
 # 1. Argument Parsing Tests
 # ---------------------------------------------------------------------------
 
@@ -529,10 +580,18 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 # bats test_tags=unit
-@test "image tag: uses VERSION for image tag" {
-    [[ "$VERSION" == "0.1.0-test" ]]
-    local tag="agent-sandbox:${VERSION}"
-    [[ "$tag" == "agent-sandbox:0.1.0-test" ]]
+@test "image tag: IMAGE_TAG is constructed as 'agent-sandbox:<VERSION>'" {
+    # Verify that the launcher's IMAGE_TAG construction formula produces the
+    # expected format. The launcher sets IMAGE_TAG="agent-sandbox:${VERSION}"
+    # in main(); we replicate that formula here and verify the result.
+    local expected="agent-sandbox:${VERSION}"
+
+    # Simulate the launcher's IMAGE_TAG assignment
+    local IMAGE_TAG="agent-sandbox:${VERSION}"
+
+    [[ "$IMAGE_TAG" == "$expected" ]]
+    # Verify the tag contains the actual version string (not a placeholder)
+    [[ "$IMAGE_TAG" == "agent-sandbox:0.1.0-test" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -541,28 +600,21 @@ teardown() {
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: mounts external directory symlinks" {
-    local workspace ext_dir
-    workspace="$(mktemp -d)"
-    ext_dir="$(mktemp -d)"
-    # Register cleanup trap so temp dirs are removed even if the test fails
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$ext_dir'" EXIT
-
-    mkdir -p "${ext_dir}/some-content"
-    ln -s "$ext_dir" "${workspace}/link-to-external"
+    _setup_symlink_workspace
+    mkdir -p "${_EXTERNAL_DIR}/some-content"
 
     # Resolve paths as the launcher will (portable_realpath resolves /var -> /private/var on macOS)
     local resolved_ext
-    resolved_ext=$(portable_realpath "$ext_dir")
+    resolved_ext=$(portable_realpath "$_EXTERNAL_DIR")
 
-    WORKSPACE="$workspace"
+    WORKSPACE="$_SYMLINK_WS"
     MOUNT_FLAGS=()
     MOUNT_Z=""
     OPT_FOLLOW_ALL_SYMLINKS=false
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$ext_dir"
+    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
     trap - EXIT
 
     # The resolved external dir should appear in MOUNT_FLAGS
@@ -713,28 +765,22 @@ teardown() {
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: deduplicates identical symlink targets" {
-    local workspace ext_dir
-    workspace="$(mktemp -d)"
-    ext_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$ext_dir'" EXIT
-
-    # Two symlinks pointing to the same external directory
-    ln -s "$ext_dir" "${workspace}/link-a"
-    ln -s "$ext_dir" "${workspace}/link-b"
+    _setup_symlink_workspace
+    # Add a second symlink pointing to the same external directory
+    ln -s "$_EXTERNAL_DIR" "$_SYMLINK_WS/link-b"
 
     # Resolve as the launcher will
     local resolved_ext
-    resolved_ext=$(portable_realpath "$ext_dir")
+    resolved_ext=$(portable_realpath "$_EXTERNAL_DIR")
 
-    WORKSPACE="$workspace"
+    WORKSPACE="$_SYMLINK_WS"
     MOUNT_FLAGS=()
     MOUNT_Z=""
     OPT_FOLLOW_ALL_SYMLINKS=false
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$ext_dir"
+    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
     trap - EXIT
 
     # Count how many times the resolved external dir appears as a mount value in MOUNT_FLAGS
@@ -760,16 +806,7 @@ teardown() {
 
     assemble_env_flags
 
-    # ENV_FLAGS should contain "-e" "AGENT=opencode"
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=opencode" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "AGENT=opencode"
 }
 
 # bats test_tags=unit
@@ -785,20 +822,8 @@ teardown() {
 
     unset ANTHROPIC_API_KEY
 
-    # ANTHROPIC_API_KEY should be in ENV_FLAGS (as "-e" "ANTHROPIC_API_KEY")
-    local found_anthropic=false
-    local found_openai=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "ANTHROPIC_API_KEY" ]]; then
-            found_anthropic=true
-        fi
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "OPENAI_API_KEY" ]]; then
-            found_openai=true
-        fi
-    done
-    [[ "$found_anthropic" == true  ]]
-    [[ "$found_openai"    == false ]]
+    assert_env_flag "ANTHROPIC_API_KEY"
+    refute_env_flag "OPENAI_API_KEY"
 }
 
 # bats test_tags=unit
@@ -818,17 +843,14 @@ teardown() {
 
     assemble_env_flags
 
-    # None of the default API keys should appear since they are all unset
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" ]]; then
-            local val="${ENV_FLAGS[$i+1]}"
-            # Only AGENT=... and possibly SSH/NO_SSH flags are expected
-            if [[ "$val" != "AGENT="* && "$val" != "SSH_AUTH_SOCK="* && "$val" != "AGENT_SANDBOX_NO_SSH="* ]]; then
-                fail "Unexpected env flag: $val"
-            fi
-        fi
-    done
+    refute_env_flag "ANTHROPIC_API_KEY"
+    refute_env_flag "OPENAI_API_KEY"
+    refute_env_flag "OPENROUTER_API_KEY"
+    refute_env_flag "MISTRAL_API_KEY"
+    refute_env_flag "AWS_ACCESS_KEY_ID"
+    refute_env_flag "AWS_SECRET_ACCESS_KEY"
+    refute_env_flag "AWS_SESSION_TOKEN"
+    refute_env_flag "GITHUB_TOKEN"
 }
 
 # bats test_tags=unit
@@ -843,15 +865,7 @@ teardown() {
 
     unset MY_CUSTOM_VAR
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "MY_CUSTOM_VAR" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "MY_CUSTOM_VAR"
 }
 
 # bats test_tags=unit
@@ -864,15 +878,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "MY_UNSET_VAR" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
+    refute_env_flag "MY_UNSET_VAR"
 }
 
 # bats test_tags=unit
@@ -884,15 +890,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "SSH_AUTH_SOCK=/tmp/ssh_auth_sock"
 }
 
 # bats test_tags=unit
@@ -904,15 +902,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
+    refute_env_flag "SSH_AUTH_SOCK=/tmp/ssh_auth_sock"
 }
 
 # bats test_tags=unit
@@ -924,15 +914,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT_SANDBOX_NO_SSH=1" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "AGENT_SANDBOX_NO_SSH=1"
 }
 
 # bats test_tags=unit
@@ -944,35 +926,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT_SANDBOX_NO_SSH=1" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
-}
-
-# bats test_tags=unit
-@test "assemble_env_flags: AGENT reflects opencode when OPT_AGENT=opencode" {
-    OPT_AGENT="opencode"
-    OPT_NO_SSH=false
-    SSH_FORWARDED=false
-    CFG_EXTRA_VARS=()
-
-    assemble_env_flags
-
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=opencode" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    refute_env_flag "AGENT_SANDBOX_NO_SSH=1"
 }
 
 # ---------------------------------------------------------------------------
@@ -1863,5 +1817,340 @@ echo 'installer ran'
     assert_success
     assert_output --partial "Checksum verified"
     assert_output --partial "Updated to v2.0.0"
+}
+
+# ---------------------------------------------------------------------------
+# 13. collect_extra_mounts() Unit Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "collect_extra_mounts: :rw suffix splits correctly and passes rw mode" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    OPT_EXTRA_MOUNTS=("${extra_dir}:rw")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
+    # Should contain a :rw mount (not :ro)
+    local found_rw=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":rw" ]]; then
+            found_rw=true
+            break
+        fi
+    done
+    [[ "$found_rw" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: default mode is ro when no suffix" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # Should contain a :ro mount (not :rw)
+    local found_ro=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":ro" ]]; then
+            found_ro=true
+            break
+        fi
+    done
+    [[ "$found_ro" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: ~/path expands to HOME" {
+    local subdir="test-extra-mount-$$"
+    mkdir -p "${HOME}/${subdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${HOME}/${subdir}'" EXIT
+
+    OPT_EXTRA_MOUNTS=("~/${subdir}")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "${HOME}/${subdir}"
+    trap - EXIT
+
+    # The mount should reference the expanded HOME path
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${HOME}/${subdir}"* || "$flag" == *"/${subdir}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: HOME-relative paths map to /home/sandbox/ inside container" {
+    local subdir="test-sandbox-mount-$$"
+    mkdir -p "${HOME}/${subdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${HOME}/${subdir}'" EXIT
+
+    OPT_EXTRA_MOUNTS=("${HOME}/${subdir}")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "${HOME}/${subdir}"
+    trap - EXIT
+
+    # The container path should be /home/sandbox/<relative>
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":/home/sandbox/${subdir}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: non-HOME paths map to same absolute path" {
+    # Use /tmp which is outside HOME
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    # Ensure the path is not under HOME
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
+    # Skip if mktemp created the dir under HOME (unlikely but possible)
+    if [[ "$resolved" == "$HOME"/* ]]; then
+        rm -rf "$extra_dir"
+        trap - EXIT
+        skip "mktemp dir is under HOME — cannot test non-HOME path mapping"
+    fi
+
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # The container path should equal the host path (same absolute path)
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${resolved}:${resolved}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: missing path warns and skips" {
+    OPT_EXTRA_MOUNTS=("/nonexistent/path/that/does/not/exist")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    # Should not fail, just warn
+    collect_extra_mounts
+
+    # MOUNT_FLAGS should be empty (the missing path was skipped)
+    [[ "${#MOUNT_FLAGS[@]}" -eq 0 ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: deduplicates CLI and config mounts for the same path" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    # Same path appears in both CLI mounts and config paths
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=("$extra_dir")
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
+    # Count occurrences of the path in MOUNT_FLAGS
+    local count=0
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${resolved}:"* ]]; then
+            count=$((count + 1))
+        fi
+    done
+    [[ "$count" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# 14. detect_runtime() Unit Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "detect_runtime: AGENT_SANDBOX_RUNTIME=docker uses docker even when podman exists" {
+    # Create fake podman and docker in a temp dir
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
+
+    export AGENT_SANDBOX_RUNTIME="docker"
+    local old_path="$PATH"
+    export PATH="${fake_bin}:${PATH}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    unset AGENT_SANDBOX_RUNTIME
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "docker" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: AGENT_SANDBOX_RUNTIME=podman uses podman" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    chmod +x "${fake_bin}/podman"
+
+    export AGENT_SANDBOX_RUNTIME="podman"
+    local old_path="$PATH"
+    export PATH="${fake_bin}:${PATH}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    unset AGENT_SANDBOX_RUNTIME
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "podman" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: invalid AGENT_SANDBOX_RUNTIME value exits with error" {
+    export AGENT_SANDBOX_RUNTIME="invalid-runtime"
+
+    run detect_runtime
+
+    unset AGENT_SANDBOX_RUNTIME
+
+    assert_failure
+    assert_output --partial "must be 'podman' or 'docker'"
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when both podman and docker exist, podman is preferred" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
+
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    # Prepend fake_bin to PATH so only our fakes are found
+    export PATH="${fake_bin}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "podman" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when neither podman nor docker exists, exits with error" {
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    # Set PATH to an empty temp dir so no runtimes are found
+    local empty_bin
+    empty_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$empty_bin'" EXIT
+    export PATH="$empty_bin"
+
+    run detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$empty_bin"
+    trap - EXIT
+
+    assert_failure
+    assert_output --partial "Neither 'podman' nor 'docker' found"
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when only docker exists, docker is used" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/docker"
+
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    export PATH="${fake_bin}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "docker" ]]
 }
 

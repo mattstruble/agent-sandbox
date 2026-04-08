@@ -48,6 +48,24 @@ teardown() {
     [[ -n "$_TEST_HOST_CONFIG_DIR" ]] && rm -rf "$_TEST_HOST_CONFIG_DIR" || true
 }
 
+# ---------------------------------------------------------------------------
+# Helper: _run_in_sandbox
+# ---------------------------------------------------------------------------
+# Run a command inside the container with production-equivalent security flags.
+# Usage: _run_in_sandbox "bash -c 'command'"
+# For tests that need additional flags (volumes, env vars), use the runtime directly.
+_run_in_sandbox() {
+    "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        --entrypoint bash "$IMAGE" \
+        -c "$1"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 1: Image Contents
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,48 +348,24 @@ teardown() {
 
 # bats test_tags=integration
 @test "firewall: IPv6 is disabled" {
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c 'cat /proc/sys/net/ipv6/conf/all/disable_ipv6'
+    run _run_in_sandbox 'cat /proc/sys/net/ipv6/conf/all/disable_ipv6'
     assert_success
     assert_output "1"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: outbound TCP 443 (HTTPS) is allowed" {
     # Requires internet access: init-firewall.sh itself verifies HTTPS reachability
     # as part of its post-setup check, and this test also probes it directly.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/443" 2>/dev/null && echo "HTTPS_OK"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/443" 2>/dev/null && echo "HTTPS_OK"'
     assert_success
     assert_output --partial "HTTPS_OK"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: outbound TCP 80 (HTTP) is allowed" {
     # Requires internet access: see note on TCP 443 test above.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/80" 2>/dev/null && echo "HTTP_OK"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/80" 2>/dev/null && echo "HTTP_OK"'
     assert_success
     assert_output --partial "HTTP_OK"
 }
@@ -385,15 +379,7 @@ teardown() {
     #   2. Port 8080 has no ACCEPT rule — it falls through to the catch-all.
     # This is more specific than checking for any REJECT rule, which would pass
     # even if only an unrelated port had a REJECT rule.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
             # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
             if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
                 echo "CATCHALL_REJECT_PRESENT"
@@ -416,15 +402,7 @@ teardown() {
     # Same verification as port 8080: the catch-all REJECT blocks port 3000 because
     # there is no ACCEPT rule for it. Tests both the presence of the catch-all and
     # the absence of a port-3000 ACCEPT rule.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
             # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
             if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
                 echo "CATCHALL_REJECT_PRESENT"
@@ -442,18 +420,10 @@ teardown() {
     assert_output --partial "PORT_3000_NOT_ACCEPTED"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: DNS resolution works through pinned resolver" {
     # Requires internet access: getent hosts makes a live DNS query.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && getent hosts example.com'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && getent hosts example.com'
     assert_success
     # Verify the output contains an IP address, not just any non-empty string.
     assert_output --regexp '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
@@ -464,15 +434,7 @@ teardown() {
     # UDP is connectionless so we verify the iptables ACCEPT rule is present
     # rather than attempting a live NTP exchange. Uses word-boundary grep to
     # avoid matching 162.159.200.123 when checking for 162.159.200.1.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.1"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.1"'
     assert_success
 }
 
@@ -480,15 +442,7 @@ teardown() {
 @test "firewall: NTP iptables rule allows UDP 123 to Cloudflare 162.159.200.123" {
     # UDP is connectionless so we verify the iptables ACCEPT rule is present
     # rather than attempting a live NTP exchange.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.123"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.123"'
     assert_success
 }
 
@@ -496,15 +450,7 @@ teardown() {
 @test "firewall: NTP iptables rule rejects UDP 123 to non-pinned IPs" {
     # Verify the catch-all REJECT rule for UDP 123 (after the Cloudflare ACCEPT rules)
     # is present. This ensures non-Cloudflare NTP is blocked.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep "REJECT"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep "REJECT"'
     assert_success
 }
 

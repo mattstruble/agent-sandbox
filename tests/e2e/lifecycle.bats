@@ -118,6 +118,26 @@ _precompute_container_name() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: _make_verify_agent
+# ---------------------------------------------------------------------------
+# Create a temporary agent script that runs the given commands and exits.
+# Prints the path to the created script.
+#
+# Usage: FAKE_AGENT="$(_make_verify_agent 'cat /workspace/file.txt')"
+_make_verify_agent() {
+	local commands="$1"
+	local agent_script
+	agent_script="$(make_temp)"
+	TEST_TMPFILES+=("$agent_script")
+	cat > "$agent_script" <<EOF
+#!/usr/bin/env bash
+$commands
+EOF
+	chmod +x "$agent_script"
+	echo "$agent_script"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: _run_sandbox
 # ---------------------------------------------------------------------------
 # Runs the container using launcher-computed flags, with the fake agent
@@ -217,13 +237,8 @@ _run_sandbox() {
 	# Create a sentinel file in the workspace before launching
 	echo "host-created-content" >"${WORKSPACE_DIR}/host-file.txt"
 
-	# Use a custom fake agent that verifies the file exists at /workspace/
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 if [[ -f /workspace/host-file.txt ]]; then
     echo "WORKSPACE_FILE_VISIBLE: yes"
     cat /workspace/host-file.txt
@@ -231,13 +246,7 @@ else
     echo "WORKSPACE_FILE_VISIBLE: no"
     exit 1
 fi
-exit 0
-AGENT
-
-	# FAKE_AGENT is a global read by _run_sandbox; save/restore to scope the
-	# override to this test.
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -255,20 +264,11 @@ AGENT
 
 # bats test_tags=e2e
 @test "workspace mount: file written inside container appears on host filesystem" {
-	# Use a custom fake agent that writes a file to /workspace/
-	local write_agent
-	write_agent="$(make_temp)"
-	TEST_TMPFILES+=("$write_agent")
-	chmod 700 "$write_agent"
-	cat >"$write_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 echo "written-from-container" >/workspace/container-created-file.txt
 echo "CONTAINER_WRITE: done"
-exit 0
-AGENT
-
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$write_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -537,19 +537,9 @@ AGENT
 
 # bats test_tags=e2e
 @test "env passthrough: AGENT env var is set to 'opencode' inside the container" {
-	# Use a custom fake agent that prints the AGENT env var
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "AGENT_VALUE: ${AGENT:-unset}"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "AGENT_VALUE: ${AGENT:-unset}"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -566,18 +556,9 @@ AGENT
 
 # bats test_tags=e2e
 @test "no-ssh flag: AGENT_SANDBOX_NO_SSH env var is set inside container when --no-ssh is passed" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "NO_SSH_VALUE: ${AGENT_SANDBOX_NO_SSH:-unset}"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "NO_SSH_VALUE: ${AGENT_SANDBOX_NO_SSH:-unset}"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -589,17 +570,13 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 12: Gitconfig mount — host gitconfig is accessible in container
+# Test 11: Gitconfig mount — host gitconfig is accessible in container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
 @test "gitconfig mount: host .gitconfig is mounted read-only at /home/sandbox/.gitconfig" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 if [[ -f /home/sandbox/.gitconfig ]]; then
     echo "GITCONFIG_VISIBLE: yes"
     grep -q "Test User" /home/sandbox/.gitconfig && echo "GITCONFIG_NAME: correct"
@@ -607,11 +584,7 @@ else
     echo "GITCONFIG_VISIBLE: no"
     exit 1
 fi
-exit 0
-AGENT
-
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -624,7 +597,7 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 13: Container removed after exit (--rm flag)
+# Test 12: Container removed after exit (--rm flag)
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
@@ -643,23 +616,14 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 14: Workspace is the working directory inside the container
+# Test 13: Workspace is the working directory inside the container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
 @test "workspace mount: /workspace is the working directory when the agent runs" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "PWD_VALUE: $(pwd)"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "PWD_VALUE: $(pwd)"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
