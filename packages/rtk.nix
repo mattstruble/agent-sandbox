@@ -38,8 +38,8 @@ stdenv.mkDerivation {
     mkdir -p $out/bin
     # The rtk tarball extracts the binary directly to the root as 'rtk'.
     # If this fails, the tarball structure may have changed — check the release assets.
-    install -m 0755 rtk "$out/bin/rtk" \
-      || { echo "rtk binary not found at expected path; tarball structure may have changed" >&2; exit 1; }
+    test -f rtk || { echo "rtk binary not found at expected path; tarball structure may have changed" >&2; exit 1; }
+    install -m 0755 rtk "$out/bin/rtk"
     runHook postInstall
   '';
 

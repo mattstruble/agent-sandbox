@@ -102,6 +102,7 @@ jobs:
         env:
           VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: |
+          if [ -z "${VERSION}" ]; then echo "ERROR: VERSION is empty (parse-tag output missing)" >&2; exit 1; fi
           STAGING="agent-sandbox-${VERSION}"
 
           mkdir -p "${STAGING}/bin" "${STAGING}/share/agent-sandbox"
