@@ -221,6 +221,57 @@ teardown() {
 }
 
 # bats test_tags=integration
+@test "nix: Nix instructions are separated from existing AGENTS.md content by a newline" {
+    # Pre-populate AGENTS.md with content that does NOT end with a newline.
+    # The entrypoint must insert a newline separator before appending, so the
+    # Nix instructions start on their own line and are not concatenated onto
+    # the last line of the existing content.
+    _TEST_WORKSPACE="$(make_tempdir)"
+    _TEST_HOST_CONFIG_DIR="$(make_tempdir)"
+
+    # Write AGENTS.md without a trailing newline (simulates a common real-world case)
+    printf 'existing content without trailing newline' \
+        > "${_TEST_HOST_CONFIG_DIR}/AGENTS.md"
+
+    _TEST_AGENT="$(make_temp)"
+    # The fake agent prints AGENTS.md content so we can inspect it
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'cat ~/.config/opencode/AGENTS.md' \
+        'exit 0' \
+        > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
+        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
+        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        "$IMAGE"
+    assert_success
+    # The existing content and the Nix instructions must be on separate lines.
+    # If the newline separator is missing, "existing content without trailing newline"
+    # and "# Runtime Package Management" would be concatenated on the same line.
+    assert_output --regexp $'existing content without trailing newline\n'
+    assert_output --partial "# Runtime Package Management"
+}
+
+# bats test_tags=integration
 @test "static files: /etc/agent-sandbox/nix-instructions.md exists and is readable" {
     run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/nix-instructions.md
     assert_success

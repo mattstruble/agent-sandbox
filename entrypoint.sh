@@ -38,6 +38,13 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 	# job always returns exit code 0 to the shell, so we cannot detect immediate
 	# failure here — if chronyd exits (e.g., missing SYS_TIME cap), it does so
 	# silently. Time synchronization is non-critical; the container continues.
+	#
+	# Orphan note: chronyd is backgrounded here (Phase 1, as root) because it
+	# requires SYS_TIME capability. After `exec su-exec` below replaces this
+	# shell process, chronyd becomes an orphan — it has no parent process to
+	# reap it. Container runtimes run as PID 1 and act as a reaper for orphaned
+	# processes in --init containers (Docker/Podman with --init flag). Time sync
+	# is best-effort: if chronyd dies, the container continues normally.
 	chronyd -n &
 	log "chronyd launched in background."
 
@@ -48,8 +55,9 @@ fi
 
 # ─── Phase 2: Sandbox operations (runs as sandbox user) ──────────────────────
 # Step numbers correspond to the entrypoint sequence documented in DESIGN.md.
+# Steps 1-3 are Phase 1 (firewall, chronyd, su-exec drop); steps 4-8 are here.
 
-# ─── Step 2: Stage configs from read-only mounts to writable locations ────────
+# ─── Step 4: Stage configs from read-only mounts to writable locations ────────
 
 if [[ -d /host-config/opencode ]]; then
 	log "Staging opencode config..."
@@ -63,7 +71,7 @@ else
 	log "No opencode host config mounted, skipping."
 fi
 
-# ─── Step 3: Append Nix usage instructions to agent prompt files ──────────────
+# ─── Step 5: Append Nix usage instructions to agent prompt files ──────────────
 # Tells the agent to use `nix run`/`nix shell` for tools not on PATH.
 # Appended after staging so the host file content is preserved.
 # Creates the file if it does not exist (e.g., host had no config mounted).
@@ -77,13 +85,15 @@ else
 fi
 
 mkdir -p ~/.config/opencode
-if ! printf '%s' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
-	warn "Failed to append Nix instructions to AGENTS.md — continuing."
+if [[ -n "$NIX_INSTRUCTIONS" ]]; then
+	if ! printf '\n%s\n' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
+		warn "Failed to append Nix instructions to AGENTS.md — continuing."
+	else
+		log "Nix usage instructions appended to AGENTS.md."
+	fi
 fi
 
-log "Nix usage instructions appended to AGENTS.md."
-
-# ─── Step 4: Apply OpenCode permission overrides ──────────────────────────────
+# ─── Step 6: Apply OpenCode permission overrides ──────────────────────────────
 
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
@@ -139,7 +149,7 @@ EOF
 	fi
 fi
 
-# ─── Step 5: Initialize rtk for the active agent ──────────────────────────────
+# ─── Step 7: Initialize rtk for the active agent ──────────────────────────────
 
 log "Running rtk init for agent: $AGENT..."
 
@@ -149,7 +159,7 @@ else
 	warn "rtk init failed for opencode — continuing without rtk."
 fi
 
-# ─── Step 6: Exec the agent ───────────────────────────────────────────────────
+# ─── Step 8: Exec the agent ───────────────────────────────────────────────────
 
 cd /workspace || die "/workspace is not accessible — check that the workspace mount succeeded."
 

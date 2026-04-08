@@ -4,6 +4,9 @@
   pkgs,
   ...
 }:
+# NOTE: The `actualPackage` wrapping pattern (symlinkJoin + wrapProgram with
+# AGENT_SANDBOX_IMAGE_PATH) is shared with modules/nixos.nix and modules/darwin.nix.
+# If you change the wrapping logic here, apply the same change to the other two modules.
 let
   cfg = config.programs.agent-sandbox;
 

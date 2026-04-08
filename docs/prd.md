@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-AI coding agents (OpenCode, Claude Code) run with full network access and access to the host filesystem. This creates two problems: **safety** — the agent can make outbound calls to arbitrary hosts, potentially exfiltrating code or secrets — and **cost** — every tool call returns uncompressed output that consumes LLM tokens unnecessarily.
+AI coding agents (OpenCode) run with full network access and access to the host filesystem. This creates two problems: **safety** — the agent can make outbound calls to arbitrary hosts, potentially exfiltrating code or secrets — and **cost** — every tool call returns uncompressed output that consumes LLM tokens unnecessarily.
 
 `agent-sandbox` solves both: it runs the agent inside a container with a strict network allowlist and `rtk` pre-configured for transparent token compression, with no per-session setup required.
 
@@ -28,7 +28,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 - Running `agent-sandbox` from a directory starts a sandboxed session with that directory as the workspace.
 - An explicit workspace path may be passed as an argument; if omitted, the current directory is used.
-- The active agent defaults to OpenCode; `--agent claude` selects Claude Code instead.
+- The active agent defaults to OpenCode; no other agents are supported in the current release.
 - Each session is identified by a name derived deterministically from the agent and the absolute workspace path — starting the same session twice does not create duplicate containers.
 - `--list` displays all currently running agent-sandbox containers.
 - `--stop` terminates the sandbox for the current (or specified) workspace.
@@ -56,7 +56,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 ### Agent Configuration
 
-- The host agent configs (`~/.config/opencode/` for OpenCode, `~/.claude/` for Claude Code) are available to the agent inside the sandbox.
+- The host agent configs (`~/.config/opencode/` for OpenCode) are available to the agent inside the sandbox.
 - Config changes made by the agent during a session do not persist back to the host.
 - The host git identity (`~/.gitconfig`) is available to the agent.
 - SSH operations use the host's SSH agent via socket forwarding; no private key material enters the container.
@@ -74,7 +74,7 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 - The container image is built entirely from Nix — all system packages (git, curl, iptables, chrony, jq, nodejs, etc.) are provided by nixpkgs. There is no Debian base layer, no apt-get, and no secondary package manager.
 - Custom derivations in the project's Nix expressions provide binaries not available in nixpkgs (opencode, rtk). These derivations use `fetchurl` with per-architecture URLs and SHA256 hashes.
-- The default container image ships OpenCode only. Claude Code support is a future addition and not included in the default image.
+- The default container image ships OpenCode only. Support for other agents is a future addition and not included in the default image.
 - Nix is pre-installed inside the container at build time so the agent can install and run arbitrary software packages on demand without root access.
 - The agent can run any package from nixpkgs via `nix run nixpkgs#<package>` or enter a shell with packages via `nix shell nixpkgs#<package>`.
 - The agent can run packages from arbitrary flake URIs (e.g., `nix run github:user/repo#thing`); there is no restriction on which flake sources the agent can use.
@@ -84,8 +84,8 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Binary substitutes (pre-built packages) are downloaded only from the official Nix binary cache (`cache.nixos.org`). Third-party binary caches are not trusted.
 - Nix configuration (`/etc/nix/nix.conf`) and the flake registry are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 - The Nix store (`/nix/store`) is ephemeral — packages downloaded or built during a session are not persisted across container restarts. Each session starts with a clean store containing only the Nix tooling itself.
-- The Nix installation works on both amd64 and arm64 architectures — the Nix expression produces architecture-appropriate images.
-- The entrypoint appends Nix usage instructions to the active agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH. The Nix instructions text is stored as a static file in the image, read by the entrypoint at runtime.
+- The Nix installation works on amd64 — the Nix expression produces architecture-appropriate images. ARM64 image support is deferred until a native ARM runner is available for CI.
+- The entrypoint appends Nix usage instructions to the active agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode) at session start, so the agent knows to use `nix run`/`nix shell` for tools not on PATH. The Nix instructions text is stored as a static file in the image, read by the entrypoint at runtime.
 - A shell `command_not_found_handle` in `/home/sandbox/.bashrc` suggests `nix run nixpkgs#<cmd>` when an unrecognized command is executed, providing a reactive fallback hint for both agents.
 
 ### Image Management
@@ -139,9 +139,9 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 #### Image Publishing
 
 - The container image is published to GHCR at `ghcr.io/mstruble/agent-sandbox`.
-- Images are published for both `linux/amd64` and `linux/arm64` architectures as a multi-arch manifest.
-- Every push to main builds on two native runners (x86_64 and aarch64), pushes arch-specific images, and creates a multi-arch manifest tagged with the commit SHA (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
-- Every semver release publishes a version-tagged multi-arch image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
+- Images are published for `linux/amd64`. ARM64 support is deferred until a native ARM runner is available for CI.
+- Every push to main builds on an x86_64 runner, pushes an arch-specific image, and creates a manifest tagged with the commit SHA (`ghcr.io/mstruble/agent-sandbox:<commit-sha>`).
+- Every semver release publishes a version-tagged image (`ghcr.io/mstruble/agent-sandbox:<semver>`) and updates the `:latest` tag.
 - `agent-sandbox --version` prints the current version and exits.
 
 ### Testing & Validation
@@ -176,7 +176,6 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - The Nix binary cache is configured to `cache.nixos.org` only.
 - Running a nonexistent command in the sandbox shell outputs a `nix run nixpkgs#` suggestion via `command_not_found_handle`.
 - The entrypoint appends Nix usage instructions to `~/.config/opencode/AGENTS.md` for OpenCode sessions.
-- The entrypoint appends Nix usage instructions to `~/.claude/CLAUDE.md` for Claude Code sessions.
 
 #### End-to-End Tests
 - Invoking `agent-sandbox.sh` with a temporary workspace directory starts a container and the fake agent runs to completion.
@@ -219,7 +218,6 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 - Renovate opens dependency update PRs automatically, grouped by category.
 - Most container dependencies (git, curl, iptables, chrony, jq, nodejs, gh, uv, etc.) are managed through the `flake.lock` nixpkgs pin. Updating `flake.lock` updates all nixpkgs-sourced packages in one operation.
 - Custom Nix derivations for opencode and rtk have version strings and SHA256 hashes tracked by Renovate regex managers targeting the files in the `packages/` directory.
-- The claude-code npm version is tracked by a Renovate regex manager.
 - Nix flake inputs (`flake.lock`) are grouped into a single PR.
 - GitHub Actions versions are grouped into a single PR.
 - Dependency versions are pinned via `flake.lock` and per-derivation SHA256 hashes.
@@ -234,6 +232,6 @@ AI coding agents (OpenCode, Claude Code) run with full network access and access
 
 - Nix store persistence across sessions — packages are re-downloaded each session; shared caches or volumes are not supported.
 - Per-project config files — configuration is user-global (`~/.config/agent-sandbox/config.toml`) only.
-- Support for agents other than OpenCode and Claude Code.
+- Support for agents other than OpenCode.
 - Native Windows support (PowerShell/cmd.exe). Windows is supported via WSL2 only.
 - Homebrew tap or other package manager distribution (curl|sh is the non-Nix install path).

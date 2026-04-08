@@ -9,7 +9,7 @@ Behaviors covered:
 - Nix configuration (`/etc/nix/nix.conf`) and the flake registry are owned by root and read-only to the sandbox user. The agent cannot modify Nix's core settings (substituters, experimental features, trust model).
 
 ## Summary
-Locks down the Nix installation with immutable, root-owned configuration files baked into the Nix-built image. Pins nixpkgs to the same revision as `flake.lock` via the `flake-registry` parameter of `dockerTools.buildLayeredImage`, restricts substituters to `cache.nixos.org`, and relies on `flake.lock` updates via Renovate for version management. The agent retains full ability to use Nix but cannot alter its trust model or binary cache sources.
+Locks down the Nix installation with immutable, root-owned configuration files baked into the Nix-built image. Pins nixpkgs to the same revision as `flake.lock` via a `writeText`-generated registry JSON copied into the image at `/etc/nix/registry.json`, restricts substituters to `cache.nixos.org`, and relies on `flake.lock` updates via Renovate for version management. The agent retains full ability to use Nix but cannot alter its trust model or binary cache sources.
 
 ## Acceptance Criteria
 
@@ -25,7 +25,7 @@ Locks down the Nix installation with immutable, root-owned configuration files b
 
 ### Flake registry (nixpkgs pin)
 - [ ] The nixpkgs pin is derived from the project's `flake.lock` at build time — there is no separate `NIXPKGS_REV` variable.
-- [ ] The registry is generated via the `flake-registry` parameter of `dockerTools.buildLayeredImage` (same pattern as upstream NixOS/nix `docker.nix`).
+- [ ] The registry JSON is generated via `pkgsLinux.writeText` and copied into the image at `/etc/nix/registry.json` via `fakeRootCommands` in `dockerTools.buildLayeredImage`.
 - [ ] `nix registry list` as the `sandbox` user shows the pinned `nixpkgs` entry.
 - [ ] `nix run nixpkgs#hello` resolves to the pinned revision (not a floating channel).
 - [ ] Updating `flake.lock` updates both the build-time and runtime nixpkgs pin in one operation.

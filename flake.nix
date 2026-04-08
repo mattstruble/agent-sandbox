@@ -236,10 +236,12 @@
 
               # ── Chrony configuration ─────────────────────────────────────────────
               mkdir -p etc/chrony
+              chmod 0555 etc/chrony
               cp ${chronyConfFile} etc/chrony/chrony.conf
 
               # ── Static agent-sandbox files ───────────────────────────────────────
               mkdir -p etc/agent-sandbox
+              chmod 0555 etc/agent-sandbox
               cp ${nixInstructionsFile} etc/agent-sandbox/nix-instructions.md
               cp ${opencodePermissionsFile} etc/agent-sandbox/opencode-permissions.json
               chmod 0444 etc/agent-sandbox/nix-instructions.md
@@ -369,8 +371,10 @@
                 # but the file may not exist on disk until 'nix build .#container-image'
                 # has been run. Only export AGENT_SANDBOX_IMAGE_PATH when the file is
                 # present; otherwise the launcher falls back to pulling from GHCR.
-                if [[ -f "${imagePath}" ]]; then
+                if [ -f "${imagePath}" ]; then
                   export AGENT_SANDBOX_IMAGE_PATH="${imagePath}"
+                else
+                  echo "[agent-sandbox] NOTE: container image not built yet (${imagePath} not found). Run 'nix build .#container-image' to build it locally, or the launcher will pull from GHCR." >&2
                 fi
                 exec "${self'.packages.default}/bin/agent-sandbox" "$@"
               '';

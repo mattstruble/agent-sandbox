@@ -16,12 +16,11 @@ Creates `packages/opencode.nix` and `packages/rtk.nix` — custom Nix derivation
 - [ ] The SHA256 hash is specified per architecture.
 - [ ] The version is a single string at the top of the file, easily matchable by Renovate regex.
 - [ ] The derivation extracts the tarball and installs the `opencode` binary to `$out/bin/opencode`.
-- [ ] The build phase runs `opencode db migrate` (with a timeout) to pre-initialize the database, matching the current Containerfile behavior.
 - [ ] `nix build .#opencode` produces a working binary.
 
 ### `packages/rtk.nix`
 - [ ] The derivation uses `stdenv.mkDerivation` (or `stdenv.mkDerivation` wrapping `fetchurl`).
-- [ ] The source URL selects the correct architecture variant: `x86_64-unknown-linux-musl` for x86_64, `aarch64-unknown-linux-musl` for aarch64.
+- [ ] The source URL selects the correct architecture variant: `x86_64-unknown-linux-gnu` for x86_64, `aarch64-unknown-linux-gnu` for aarch64.
 - [ ] The SHA256 hash is specified per architecture.
 - [ ] The version is a single string at the top of the file, easily matchable by Renovate regex.
 - [ ] The derivation extracts the tarball and installs the `rtk` binary to `$out/bin/rtk`.
@@ -46,6 +45,5 @@ Creates `packages/opencode.nix` and `packages/rtk.nix` — custom Nix derivation
 - None.
 
 ## Out of Scope
-- Packaging claude-code as a Nix derivation (it remains an npm install).
 - Adding these packages to nixpkgs upstream.
 - macOS/darwin variants of these derivations (the container image is Linux-only; the host launcher does not need these binaries).

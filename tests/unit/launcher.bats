@@ -1437,3 +1437,98 @@ EOF
     [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
 }
 
+# ---------------------------------------------------------------------------
+# 11. pull_image() Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime for pull_image tests.
+#   pull_exit  — exit code for the 'pull' subcommand (default 0 = success)
+#   tag_exit   — exit code for the 'tag' subcommand (default 0 = success)
+#   images_after_tag — if "true", 'images' returns non-empty after 'tag' is called
+_setup_fake_runtime_for_pull() {
+    local pull_exit="${1:-0}"
+    local tag_exit="${2:-0}"
+    local images_after_tag="${3:-true}"
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    pull)
+        exit ${pull_exit}
+        ;;
+    tag)
+        if [ ${tag_exit} -eq 0 ] && [ "${images_after_tag}" = "true" ]; then
+            touch "${_FAKE_RUNTIME_DIR}/image_tagged"
+        fi
+        exit ${tag_exit}
+        ;;
+    images)
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_tagged" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when pull command fails" {
+    # pull exits with code 1
+    _setup_fake_runtime_for_pull 1 0
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to pull image"
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when tag command fails" {
+    # pull succeeds but tag exits with code 1
+    _setup_fake_runtime_for_pull 0 1
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to tag"
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when tag succeeds but image not found locally" {
+    # pull and tag succeed but images_after_tag=false simulates the tag not appearing
+    _setup_fake_runtime_for_pull 0 0 false
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "agent-sandbox:0.1.0-test"
+}
+
+# bats test_tags=unit
+@test "pull_image: succeeds and logs confirmation when pull and tag produce expected local tag" {
+    _setup_fake_runtime_for_pull 0 0 true
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Image pulled and tagged: agent-sandbox:0.1.0-test"
+}
+

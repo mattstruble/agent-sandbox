@@ -22,7 +22,6 @@ Bats unit tests that source `agent-sandbox.sh` and exercise individual functions
 
 ### Argument parsing
 - [ ] `--agent opencode` sets the agent to opencode.
-- [ ] `--agent claude` sets the agent to claude.
 - [ ] `--agent invalid` exits with a non-zero code and an error message.
 - [ ] `--no-ssh`, `--follow-symlinks`, `--follow-all-symlinks`, `--pull`, `--list`, `--stop`, `--prune`, `--version` are all recognized.
 - [ ] `--follow-all-symlinks` implies `--follow-symlinks`.

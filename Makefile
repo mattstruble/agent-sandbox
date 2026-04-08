@@ -3,8 +3,8 @@
 # Auto-detect container runtime: prefer podman, fall back to docker.
 RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
-# Version must match flake.nix — used for image tag.
-VERSION ?= 0.1.0
+# Version is derived from flake.nix at runtime so it stays in sync automatically.
+VERSION ?= $(shell grep -m1 'version = ' flake.nix | grep -o '"[^"]*"' | tr -d '"')
 
 IMAGE_TAG := agent-sandbox:$(VERSION)
 

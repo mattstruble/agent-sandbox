@@ -542,6 +542,10 @@ pull_image() {
 	# Tag locally so we can reference it as agent-sandbox:<version> everywhere
 	"$RUNTIME" tag "${GHCR_IMAGE}:${tag}" "agent-sandbox:${tag}" ||
 		die "Failed to tag ${GHCR_IMAGE}:${tag} as agent-sandbox:${tag}"
+	# Verify the expected tag is now present locally, mirroring load_image's pattern.
+	if ! image_exists_locally "$tag"; then
+		die "Image pulled and tagged but agent-sandbox:${tag} was not found locally. The tag operation may have failed silently."
+	fi
 	log "Image pulled and tagged: agent-sandbox:${tag}"
 }
 

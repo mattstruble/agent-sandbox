@@ -46,7 +46,7 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
 - [ ] Adds `containerPackage` to `home.packages` when non-null.
 - [ ] `containerPackage` defaults to `pkgs.podman` when `pkgs.stdenv.isLinux`, `null` otherwise.
 - [ ] Exposes typed options under `programs.agent-sandbox.settings`:
-  - `defaultAgent` — `enum [ "opencode" "claude" ]`, default `"opencode"`.
+  - `defaultAgent` — `enum [ "opencode" ]`, default `"opencode"`.
   - `env.extraVars` — `listOf str`, default `[]`.
   - `workspace.followSymlinks` — `bool`, default `false`.
   - `workspace.followAllSymlinks` — `bool`, default `false`.

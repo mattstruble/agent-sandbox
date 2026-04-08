@@ -15,6 +15,7 @@ Replaces Trivy container image scanning with `vulnix`, a Nix-native vulnerabilit
 - [ ] The build+scan job in `pr-checks.yml` runs `vulnix` against the Nix store closure of the container image after building it.
 - [ ] `vulnix` is available via `nix run nixpkgs#vulnix` or added to the devShell.
 - [ ] The job fails if `vulnix` reports vulnerabilities above a configured severity threshold.
+  - **Note:** vulnix is currently advisory-only (non-blocking) during early development to allow the initial advisory backlog to be triaged. TODO: make vulnix blocking once the backlog is triaged.
 - [ ] The `vulnix` scan runs after `nix build .#container-image` so the closure is available in the Nix store.
 
 ### vulnix integration in publish workflow
@@ -33,6 +34,5 @@ Replaces Trivy container image scanning with `vulnix`, a Nix-native vulnerabilit
 - None.
 
 ## Out of Scope
-- Scanning npm dependencies within claude-code (vulnix scans Nix derivations; npm audit is a separate concern).
 - Replacing Trivy filesystem scanning (retained for non-Nix concerns).
 - Configuring vulnix whitelists for accepted CVEs (can be added later if needed).

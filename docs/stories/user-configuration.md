@@ -12,7 +12,7 @@ Implements parsing of `~/.config/agent-sandbox/config.toml` using Python3 `tomll
 ## Acceptance Criteria
 - [ ] If `~/.config/agent-sandbox/config.toml` does not exist, the launcher uses all default values and does not error.
 - [ ] If the file exists but is malformed (invalid TOML syntax), the launcher exits with a non-zero code and a human-readable error message identifying the parse failure.
-- [ ] `[defaults]` section: `agent` is validated against known agents (`opencode`, `claude`). An unrecognized value causes a non-zero exit with a clear error.
+- [ ] `[defaults]` section: `agent` is validated against known agents (`opencode`). An unrecognized value causes a non-zero exit with a clear error.
 - [ ] `[defaults]` section: if `agent` is not set, defaults to `opencode`.
 - [ ] `[env]` section: `extra_vars` is a list of strings naming environment variables to forward. Each entry is validated as a non-empty string matching `^[A-Za-z_][A-Za-z0-9_]*$`. Invalid entries cause a non-zero exit with a clear error.
 - [ ] `[env]` section: if `extra_vars` is not set, defaults to an empty list. Only the default allowlist of API keys is forwarded.

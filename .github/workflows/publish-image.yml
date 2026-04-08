@@ -29,6 +29,9 @@ jobs:
         run: |
           IMAGE_NAME=$(docker load < result | grep 'Loaded image:' | awk '{print $NF}')
           [[ -n "$IMAGE_NAME" ]] || { echo "ERROR: could not determine loaded image name" >&2; exit 1; }
+          if ! [[ "$IMAGE_NAME" =~ ^agent-sandbox:[a-zA-Z0-9._-]+$ ]]; then
+            echo "ERROR: unexpected image name format: '$IMAGE_NAME'" >&2; exit 1
+          fi
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
           # vulnix is advisory-only during early development; failures do not block the push.
           # TODO: make vulnix blocking once the initial advisory backlog is triaged.
