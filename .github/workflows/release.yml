@@ -8,22 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  retag-and-push:
-    name: Retag & Push Release Image
+  parse-tag:
+    name: Parse & Validate Semver Tag
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      packages: write
+    outputs:
+      semver: ${{ steps.parse.outputs.semver }}
     steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Derive semver from release tag
-        id: parse-tag
+      - name: Parse and validate semver tag
+        id: parse
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -39,6 +31,21 @@ jobs:
             exit 1
           fi
           echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+
+  retag-and-push:
+    name: Retag & Push Release Image
+    needs: parse-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      packages: write
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Wait for SHA-tagged manifest and arch tags to be available
         env:
@@ -61,7 +68,7 @@ jobs:
 
       - name: Retag as semver
         env:
-          SEMVER: ${{ steps.parse-tag.outputs.semver }}
+          SEMVER: ${{ needs.parse-tag.outputs.semver }}
           SHA: ${{ github.sha }}
         run: |
           docker manifest create \
@@ -80,6 +87,7 @@ jobs:
 
   publish-tarball:
     name: Publish Release Tarball
+    needs: parse-tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -90,27 +98,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Derive semver from release tag
-        id: parse-tag
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          # Strip leading 'v' if present
-          SEMVER="${TAG#v}"
-          if [ -z "$SEMVER" ]; then
-            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
-            exit 1
-          fi
-          # Validate semver format to prevent injection via malicious tag names
-          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
-            exit 1
-          fi
-          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
-
       - name: Build tarball
         env:
-          VERSION: ${{ steps.parse-tag.outputs.semver }}
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: |
           STAGING="agent-sandbox-${VERSION}"
 
@@ -135,14 +125,14 @@ jobs:
 
       - name: Generate SHA256SUMS
         env:
-          VERSION: ${{ steps.parse-tag.outputs.semver }}
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: |
           sha256sum "agent-sandbox-${VERSION}.tar.gz" install.sh > SHA256SUMS \
             || { echo "ERROR: sha256sum failed" >&2; rm -f SHA256SUMS; exit 1; }
 
       - name: Upload tarball to release
         env:
-          VERSION: ${{ steps.parse-tag.outputs.semver }}
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: gh release upload "${GITHUB_REF_NAME}" "agent-sandbox-${VERSION}.tar.gz" --clobber
 
       - name: Upload SHA256SUMS to release

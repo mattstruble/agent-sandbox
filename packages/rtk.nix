@@ -6,6 +6,8 @@
 
 let
   # renovate: datasource=github-releases depName=rtk-ai/rtk
+  # IMPORTANT: The version line MUST immediately follow this comment (no blank
+  # lines between them). Renovate's regex manager relies on this adjacency.
   # NOTE: When Renovate bumps this version, the sha256 hashes below must also
   # be updated manually (e.g. via `nix-update`) — Renovate cannot fetch them
   # automatically. A stale hash causes a fetchurl mismatch build failure.
@@ -34,9 +36,10 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin
-    rtk_bin="$(find . -maxdepth 2 -name 'rtk' -type f | head -1)"
-    test -n "$rtk_bin" || { echo "rtk binary not found in tarball"; exit 1; }
-    install -m 0755 "$rtk_bin" $out/bin/rtk
+    # The rtk tarball extracts the binary directly to the root as 'rtk'.
+    # If this fails, the tarball structure may have changed — check the release assets.
+    install -m 0755 rtk "$out/bin/rtk" \
+      || { echo "rtk binary not found at expected path; tarball structure may have changed" >&2; exit 1; }
     runHook postInstall
   '';
 

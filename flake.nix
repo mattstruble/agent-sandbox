@@ -117,17 +117,17 @@
             apt-get (which requires root you do not have).
           '';
 
-          opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" ''
-            {
-              "permission": {
-                "bash": "allow",
-                "edit": "allow",
-                "read": "allow",
-                "grep": "allow",
-                "webfetch": "allow"
-              }
+          opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" (
+            builtins.toJSON {
+              permission = {
+                bash = "allow";
+                edit = "allow";
+                read = "allow";
+                grep = "allow";
+                webfetch = "allow";
+              };
             }
-          '';
+          );
 
           # Static configuration files baked into the image.
           # Using writeText (consistent with nixInstructionsFile and opencodePermissionsFile)
@@ -306,6 +306,12 @@
               # path, but these scripts run inside the container where no Nix
               # store exists.
               postFixup = ''
+                # Restore shebangs for container-only scripts. patchShebangs rewrites
+                # them to /nix/store paths, which won't exist inside the container.
+                # We can't use dontPatchShebangs because the launcher script (agent-sandbox.sh)
+                # legitimately needs Nix store shebangs for the host Nix installation path.
+                # This postFixup only affects the tarball distribution — the container image
+                # copies scripts directly from source via ${./entrypoint.sh}.
                 sed -i '1s|^#!.*/bash$|#!/usr/bin/env bash|' \
                   $out/share/agent-sandbox/entrypoint.sh \
                   $out/share/agent-sandbox/init-firewall.sh

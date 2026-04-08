@@ -138,6 +138,9 @@ log "Running post-setup verification..."
 # Negative test: a non-HTTP port must be blocked.
 # TCP 9 (discard) is never legitimately needed; the REJECT rule drops it immediately.
 # If iptables failed to apply (default kernel ACCEPT policy), this catches it.
+# 93.184.216.34 is example.com, maintained by IANA/ICANN. It is one of the
+# most stable public IPs on the internet. The 5-second timeout limits the
+# blast radius if it ever becomes unreachable.
 log "  Checking non-HTTP port is blocked..."
 if timeout 3 bash -c 'echo >/dev/tcp/93.184.216.34/9' 2>/dev/null; then
 	err "FIREWALL BROKEN: non-HTTP port (TCP 9) is reachable — iptables rules did not apply correctly"
@@ -149,6 +152,9 @@ log "  Non-HTTP traffic is blocked."
 # Validates that ACCEPT rules for TCP 443 are actually in place. Without this,
 # a firewall that blocks *everything* (e.g., rules applied in wrong order, or
 # default DROP without ACCEPT rules) would pass the negative test alone.
+# 93.184.216.34 is example.com, maintained by IANA/ICANN. It is one of the
+# most stable public IPs on the internet. The 5-second timeout limits the
+# blast radius if it ever becomes unreachable.
 log "  Checking HTTPS port is reachable..."
 if ! timeout 5 bash -c 'echo >/dev/tcp/93.184.216.34/443' 2>/dev/null; then
 	err "FIREWALL BROKEN: HTTPS (TCP 443) is not reachable — ACCEPT rules may not have applied"

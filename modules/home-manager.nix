@@ -5,10 +5,11 @@
   ...
 }:
 # NOTE: The `actualPackage` wrapping pattern (symlinkJoin + wrapProgram with
-# AGENT_SANDBOX_IMAGE_PATH) is shared with modules/nixos.nix and modules/darwin.nix.
-# If you change the wrapping logic here, apply the same change to the other two modules.
+# AGENT_SANDBOX_IMAGE_PATH) is shared via modules/lib.nix.
+# If you change the wrapping logic, update modules/lib.nix (not this file).
 let
   cfg = config.programs.agent-sandbox;
+  moduleLib = import ./lib.nix { inherit lib pkgs; };
 
   # Build the TOML config structure from settings
   tomlFormat = pkgs.formats.toml { };
@@ -34,6 +35,8 @@ let
     };
   };
 
+  # IMPORTANT: Keep allDefaults in sync with the default values of each setting
+  # in the options block below. If a new setting is added, add its default here.
   # True when every setting is at its default; suppresses config file generation
   allDefaults =
     cfg.settings.defaultAgent == "opencode"
@@ -46,19 +49,10 @@ let
 
   # When image is set, wrap the launcher with AGENT_SANDBOX_IMAGE_PATH so the
   # launcher loads the local image instead of pulling from GHCR.
-  actualPackage =
-    if cfg.image != null then
-      pkgs.symlinkJoin {
-        name = "agent-sandbox-wrapped";
-        paths = [ cfg.package ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram $out/bin/agent-sandbox \
-            --set AGENT_SANDBOX_IMAGE_PATH "${cfg.image}"
-        '';
-      }
-    else
-      cfg.package;
+  # See modules/lib.nix for the shared implementation.
+  actualPackage = moduleLib.mkActualPackage {
+    inherit (cfg) package image;
+  };
 in
 {
   options.programs.agent-sandbox = {

@@ -4,6 +4,8 @@
 RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
 # Version is derived from flake.nix at runtime so it stays in sync automatically.
+# Extracts the first 'version = "..."' from flake.nix (the top-level flake version
+# inside the perSystem block). The -m1 flag ensures we stop at the first match.
 VERSION ?= $(shell grep -m1 'version = ' flake.nix | grep -o '"[^"]*"' | tr -d '"')
 
 IMAGE_TAG := agent-sandbox:$(VERSION)

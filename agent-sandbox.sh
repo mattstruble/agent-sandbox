@@ -31,6 +31,17 @@ portable_realpath() {
 	fi
 }
 
+# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
+_sha256sum() {
+	if command -v sha256sum &>/dev/null; then
+		sha256sum "$@"
+	elif command -v shasum &>/dev/null; then
+		shasum -a 256 "$@"
+	else
+		return 1
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # Usage / help
 # ---------------------------------------------------------------------------
@@ -248,16 +259,6 @@ do_update() {
 	# path on a missing SHA256SUMS file is an accepted risk for early releases
 	# that may not yet publish a SUMS file; the HTTPS channel still provides
 	# transport-level integrity.
-	# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
-	_sha256sum() {
-		if command -v sha256sum &>/dev/null; then
-			sha256sum "$@"
-		elif command -v shasum &>/dev/null; then
-			shasum -a 256 "$@"
-		else
-			return 1
-		fi
-	}
 	local sums_url="https://github.com/mstruble/agent-sandbox/releases/download/v${latest_tag}/SHA256SUMS"
 	local sums_content
 	if sums_content=$(curl -fsSL "$sums_url" 2>/dev/null) && _sha256sum /dev/null &>/dev/null; then

@@ -7,6 +7,8 @@
 
 let
   # renovate: datasource=github-releases depName=anomalyco/opencode
+  # IMPORTANT: The version line MUST immediately follow this comment (no blank
+  # lines between them). Renovate's regex manager relies on this adjacency.
   # NOTE: When Renovate bumps this version, the sha256 hashes below must also
   # be updated manually (e.g. via `nix-update`) — Renovate cannot fetch them
   # automatically. A stale hash causes a fetchurl mismatch build failure.

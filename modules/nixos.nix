@@ -6,27 +6,18 @@
 }:
 # NOTE: This module is intentionally ~95% identical to modules/darwin.nix.
 # The only difference is the containerPackage default (pkgs.podman on NixOS,
-# null on darwin). Shared logic has not been extracted to avoid introducing an
-# extra import indirection for what is a two-file module set. If a third
-# platform module is added, consider extracting a modules/common.nix.
+# null on darwin). The actualPackage wrapping logic is shared via modules/lib.nix.
+# If you change the wrapping logic, update modules/lib.nix (not this file).
 let
   cfg = config.programs.agent-sandbox;
+  moduleLib = import ./lib.nix { inherit lib pkgs; };
 
   # When image is set, wrap the launcher with AGENT_SANDBOX_IMAGE_PATH so the
   # launcher loads the local image instead of pulling from GHCR.
-  actualPackage =
-    if cfg.image != null then
-      pkgs.symlinkJoin {
-        name = "agent-sandbox-wrapped";
-        paths = [ cfg.package ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram $out/bin/agent-sandbox \
-            --set AGENT_SANDBOX_IMAGE_PATH "${cfg.image}"
-        '';
-      }
-    else
-      cfg.package;
+  # See modules/lib.nix for the shared implementation.
+  actualPackage = moduleLib.mkActualPackage {
+    inherit (cfg) package image;
+  };
 in
 {
   options.programs.agent-sandbox = {

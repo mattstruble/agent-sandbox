@@ -86,7 +86,7 @@ fi
 
 mkdir -p ~/.config/opencode
 if [[ -n "$NIX_INSTRUCTIONS" ]]; then
-	if ! printf '\n%s\n' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
+	if ! printf '\n# --- Added by agent-sandbox ---\n%s\n' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
 		warn "Failed to append Nix instructions to AGENTS.md — continuing."
 	else
 		log "Nix usage instructions appended to AGENTS.md."
