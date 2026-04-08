@@ -283,6 +283,18 @@ teardown() {
     assert_success
 }
 
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/opencode-permissions.json is valid JSON" {
+    # Validates that the permissions file embedded in the image is well-formed JSON.
+    # jq exits non-zero and prints an error if the input is not valid JSON.
+    run "$RUNTIME" run --rm --entrypoint bash "$IMAGE" \
+        -c 'jq . < /etc/agent-sandbox/opencode-permissions.json'
+    assert_success
+    # Verify the expected structure is present (not just syntactically valid)
+    assert_output --partial '"permission"'
+    assert_output --partial '"bash"'
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 2: User Setup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,10 +377,14 @@ teardown() {
 }
 
 # bats test_tags=integration
-@test "firewall: outbound TCP 8080 is blocked" {
-    # Verifies the iptables REJECT rule for non-allowed ports is in place.
-    # Uses iptables rule inspection rather than live connectivity to avoid
-    # false positives from network unreachability masking a missing firewall rule.
+@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 8080)" {
+    # The firewall design uses a catch-all REJECT at the end of the OUTPUT chain
+    # (after ACCEPT rules for allowed ports: 80, 443, 22, DNS, NTP).
+    # This test verifies two things:
+    #   1. The catch-all REJECT rule exists as the final rule in OUTPUT (no dport).
+    #   2. Port 8080 has no ACCEPT rule — it falls through to the catch-all.
+    # This is more specific than checking for any REJECT rule, which would pass
+    # even if only an unrelated port had a REJECT rule.
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -378,14 +394,28 @@ teardown() {
         --security-opt=no-new-privileges \
         --entrypoint bash "$IMAGE" \
         -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
-            iptables -L OUTPUT -n | grep -q "REJECT" && echo "REJECT_RULE_PRESENT" || echo "REJECT_RULE_MISSING"'
+            # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
+            if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
+                echo "CATCHALL_REJECT_PRESENT"
+            else
+                echo "CATCHALL_REJECT_MISSING"
+            fi
+            # Verify port 8080 is NOT in any ACCEPT rule
+            if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:8080"; then
+                echo "PORT_8080_ACCEPTED"
+            else
+                echo "PORT_8080_NOT_ACCEPTED"
+            fi'
     assert_success
-    assert_output --partial "REJECT_RULE_PRESENT"
+    assert_output --partial "CATCHALL_REJECT_PRESENT"
+    assert_output --partial "PORT_8080_NOT_ACCEPTED"
 }
 
 # bats test_tags=integration
-@test "firewall: outbound TCP 3000 is blocked" {
-    # Same approach as TCP 8080: verify the catch-all REJECT rule is present.
+@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 3000)" {
+    # Same verification as port 8080: the catch-all REJECT blocks port 3000 because
+    # there is no ACCEPT rule for it. Tests both the presence of the catch-all and
+    # the absence of a port-3000 ACCEPT rule.
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -395,9 +425,21 @@ teardown() {
         --security-opt=no-new-privileges \
         --entrypoint bash "$IMAGE" \
         -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
-            iptables -L OUTPUT -n | grep -q "REJECT" && echo "REJECT_RULE_PRESENT" || echo "REJECT_RULE_MISSING"'
+            # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
+            if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
+                echo "CATCHALL_REJECT_PRESENT"
+            else
+                echo "CATCHALL_REJECT_MISSING"
+            fi
+            # Verify port 3000 is NOT in any ACCEPT rule
+            if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:3000"; then
+                echo "PORT_3000_ACCEPTED"
+            else
+                echo "PORT_3000_NOT_ACCEPTED"
+            fi'
     assert_success
-    assert_output --partial "REJECT_RULE_PRESENT"
+    assert_output --partial "CATCHALL_REJECT_PRESENT"
+    assert_output --partial "PORT_3000_NOT_ACCEPTED"
 }
 
 # bats test_tags=integration

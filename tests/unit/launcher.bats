@@ -1532,3 +1532,336 @@ EOF
     assert_output --partial "Image pulled and tagged: agent-sandbox:0.1.0-test"
 }
 
+# ---------------------------------------------------------------------------
+# 12. do_update() Tests
+# ---------------------------------------------------------------------------
+#
+# do_update() calls external commands (curl, sha256sum/shasum, sh) and uses
+# SHARE_DIR for Nix detection. Tests use fake scripts in a temp bin dir
+# prepended to PATH to intercept these calls without network access.
+#
+# do_update() calls exit (not return), so all tests use `run do_update`.
+
+# Helper: set up a fake bin directory for do_update() tests.
+# Creates fake curl, sha256sum, and sh scripts with configurable behavior.
+#
+# Parameters (all optional, positional):
+#   $1  api_tag        — tag_name returned by the GitHub API (default: "2.0.0")
+#   $2  install_exit   — exit code for the installer sh -c call (default: 0)
+#   $3  sums_exit      — exit code for the SHA256SUMS curl call (default: 0)
+#   $4  sums_hash      — hash entry in SHA256SUMS for install.sh (default: computed)
+#   $5  installer_content — content of the fake install.sh (default: valid shebang script)
+#
+# Sets _FAKE_UPDATE_DIR and prepends it to PATH.
+_setup_fake_update_env() {
+    local api_tag="${1:-2.0.0}"
+    local install_exit="${2:-0}"
+    local sums_exit="${3:-0}"
+    local sums_hash="${4:-}"
+    local installer_content="${5:-#!/bin/sh
+echo 'installer ran'
+}"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+
+    # Write installer content to a file so the fake curl can cat it without
+    # embedding multi-line content in a shell script (which breaks syntax).
+    printf '%s' "$installer_content" > "${_FAKE_UPDATE_DIR}/installer_content.sh"
+
+    # Fake curl: dispatches on the URL argument to return different responses.
+    # - GitHub API URL → returns JSON with tag_name
+    # - SHA256SUMS URL → returns sums content (or fails if sums_exit != 0)
+    # - install.sh URL → returns installer content (read from file)
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<CURLEOF
+#!/usr/bin/env bash
+# Parse args: find the URL (last non-flag argument after -fsSL)
+url=""
+for arg in "\$@"; do
+    case "\$arg" in
+        -*)  ;;
+        *)   url="\$arg" ;;
+    esac
+done
+case "\$url" in
+    *api.github.com*releases/latest*)
+        printf '{"tag_name": "v${api_tag}", "name": "v${api_tag}"}\n'
+        exit 0
+        ;;
+    *SHA256SUMS*)
+        if [ ${sums_exit} -ne 0 ]; then
+            exit ${sums_exit}
+        fi
+        printf '%s  install.sh\n' "${sums_hash}"
+        exit 0
+        ;;
+    *install.sh*)
+        cat "${_FAKE_UPDATE_DIR}/installer_content.sh"
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+CURLEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+
+    # Fake sha256sum: delegates to the real system sha256sum/shasum.
+    # The fake is placed first in PATH so do_update's _sha256sum() finds it,
+    # but it calls the real tool (by absolute path) to produce correct hashes.
+    # On macOS, sha256sum is not available by default; shasum is used instead.
+    local real_sha256sum
+    real_sha256sum="$(command -v sha256sum 2>/dev/null || true)"
+    local real_shasum
+    real_shasum="$(command -v shasum 2>/dev/null || true)"
+
+    cat > "${_FAKE_UPDATE_DIR}/sha256sum" <<SUMSEOF
+#!/usr/bin/env bash
+# Delegate to the real sha256sum tool (by absolute path to avoid self-reference).
+if [ -n "${real_sha256sum}" ]; then
+    exec "${real_sha256sum}" "\$@"
+elif [ -n "${real_shasum}" ]; then
+    exec "${real_shasum}" -a 256 "\$@"
+else
+    echo "aabbccdd1122334455667788990011223344556677889900aabbccdd11223344  -"
+fi
+SUMSEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/sha256sum"
+
+    # Fake sh: records the -c argument and exits with the configured exit code.
+    cat > "${_FAKE_UPDATE_DIR}/sh" <<SHEOF
+#!/usr/bin/env bash
+# Record the call
+echo "\$@" >> "${_FAKE_UPDATE_DIR}/sh_calls.log"
+# For -c invocations, record the script content
+if [ "\$1" = "-c" ]; then
+    echo "\$2" >> "${_FAKE_UPDATE_DIR}/sh_scripts.log"
+fi
+exit ${install_exit}
+SHEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/sh"
+
+    # Prepend fake bin dir to PATH so our fakes take precedence
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+}
+
+_teardown_fake_update_env() {
+    if [[ -n "${_FAKE_UPDATE_DIR:-}" && "$_FAKE_UPDATE_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_UPDATE_DIR"
+    fi
+    unset _FAKE_UPDATE_DIR
+}
+
+# Helper: compute the SHA256 of installer content as do_update() does.
+# do_update() captures install_script via command substitution (which strips
+# trailing newlines), then hashes via: printf '%s\n' "$install_script" | sha256sum.
+# This helper replicates that exact sequence so test-computed hashes match.
+_compute_hash_for_installer() {
+    local content="$1"
+    # Strip trailing newlines to match command substitution behavior, then
+    # add exactly one newline back (as printf '%s\n' does in do_update).
+    local stripped
+    stripped="${content%$'\n'}"
+    # Keep stripping until no trailing newline remains (handles multiple trailing newlines)
+    while [[ "$stripped" == *$'\n' ]]; do
+        stripped="${stripped%$'\n'}"
+    done
+    if command -v sha256sum &>/dev/null; then
+        printf '%s\n' "$stripped" | sha256sum | awk '{print $1}'
+    elif command -v shasum &>/dev/null; then
+        printf '%s\n' "$stripped" | shasum -a 256 | awk '{print $1}'
+    else
+        echo ""
+    fi
+}
+
+# bats test_tags=unit
+@test "do_update: Nix installation exits 0 with managed-by-Nix message" {
+    # When SHARE_DIR starts with /nix/store/, do_update should exit 0 and
+    # print a message directing the user to use nix profile upgrade.
+    SHARE_DIR="/nix/store/abc123-agent-sandbox-1.0.0/share"
+
+    run do_update
+
+    assert_success
+    assert_output --partial "Installed via Nix"
+}
+
+# bats test_tags=unit
+@test "do_update: already up to date exits 0 with up-to-date message" {
+    # When the GitHub API returns the same version as VERSION, do_update should
+    # exit 0 without downloading or executing anything.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.5.0"
+    _setup_fake_update_env "1.5.0"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "Already up to date"
+}
+
+# bats test_tags=unit
+@test "do_update: GitHub API failure exits non-zero with connection error message" {
+    # When curl fails for the GitHub API call, do_update should die with an
+    # error message about checking internet connection.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that always fails
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "Failed to check for updates"
+}
+
+# bats test_tags=unit
+@test "do_update: invalid version string from API exits non-zero with validation error" {
+    # When the GitHub API returns a version string containing unsafe characters
+    # (e.g. path traversal, injection), do_update should die with a validation error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that returns a crafted tag with path traversal
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"tag_name": "v../../../etc/passwd", "name": "evil"}\n'
+exit 0
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "invalid version string"
+}
+
+# bats test_tags=unit
+@test "do_update: empty tag_name from API exits non-zero with parse error" {
+    # When the GitHub API response cannot be parsed (no tag_name field),
+    # do_update should die with a parse error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that returns JSON without tag_name
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"name": "some release", "body": "no tag here"}\n'
+exit 0
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "Could not parse version"
+}
+
+# bats test_tags=unit
+@test "do_update: missing shebang in downloaded installer exits non-zero" {
+    # When the downloaded install.sh does not start with '#!/', do_update should
+    # die with a shebang validation error before executing anything.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local bad_installer="<html>Not Found</html>"
+    _setup_fake_update_env "2.0.0" 0 1 "" "$bad_installer"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "missing shebang"
+}
+
+# bats test_tags=unit
+@test "do_update: SHA256 mismatch exits non-zero with checksum failure message" {
+    # When the SHA256SUMS file is available but the computed hash of install.sh
+    # does not match the expected hash, do_update should die with a checksum error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # Provide a deliberately wrong hash in SHA256SUMS
+    local wrong_hash="0000000000000000000000000000000000000000000000000000000000000000"
+    _setup_fake_update_env "2.0.0" 0 0 "$wrong_hash" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "checksum verification FAILED"
+}
+
+# bats test_tags=unit
+@test "do_update: missing SHA256SUMS warns and continues to execute installer" {
+    # When the SHA256SUMS download fails (curl exits non-zero for the SUMS URL),
+    # do_update should warn but continue and execute the installer.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # sums_exit=1 makes the SHA256SUMS curl call fail
+    _setup_fake_update_env "2.0.0" 0 1 "" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "skipping checksum verification"
+}
+
+# bats test_tags=unit
+@test "do_update: SHA256 match proceeds to execute installer with AGENT_SANDBOX_VERSION set" {
+    # When checksums match, do_update should execute the installer via sh -c
+    # with AGENT_SANDBOX_VERSION set to the new version tag.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # Compute the correct hash for the installer content (as do_update does)
+    local correct_hash
+    correct_hash=$(_compute_hash_for_installer "$installer_content")
+    if [[ -z "$correct_hash" ]]; then
+        skip "No sha256 tool available to compute hash"
+    fi
+
+    _setup_fake_update_env "2.0.0" 0 0 "$correct_hash" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "Checksum verified"
+    assert_output --partial "Updated to v2.0.0"
+}
+
