@@ -1,5 +1,5 @@
 [defaults]
-agent = "claude"
+agent = "opencode"
 
 [env]
 extra_vars = ["CUSTOM_VAR"]

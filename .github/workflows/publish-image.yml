@@ -30,7 +30,9 @@ jobs:
           IMAGE_NAME=$(docker load < result | grep 'Loaded image:' | awk '{print $NF}')
           [[ -n "$IMAGE_NAME" ]] || { echo "ERROR: could not determine loaded image name" >&2; exit 1; }
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
-          nix run nixpkgs#vulnix -- "$(nix path-info .#container-image)" || true  # Don't block on vulnix failures initially
+          # vulnix is advisory-only during early development; failures do not block the push.
+          # TODO: make vulnix blocking once the initial advisory backlog is triaged.
+          nix run nixpkgs#vulnix -- "$(nix path-info .#container-image)" || true
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -44,42 +46,14 @@ jobs:
           docker tag "$IMAGE_NAME" "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64"
           docker push "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64"
 
-  build-arm64:
-    name: Build arm64
-    # NOTE: This job runs on ubuntu-latest (x86_64) as a placeholder until a native
-    # ARM runner is available. The resulting image will be x86_64, not arm64.
-    # TODO: Switch to a native ARM runner: runs-on: [self-hosted, linux, arm64]
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: DeterminateSystems/nix-installer-action@v14
-
-      - name: Build container image
-        run: nix build .#container-image
-
-      - name: Load image
-        run: |
-          IMAGE_NAME=$(docker load < result | grep 'Loaded image:' | awk '{print $NF}')
-          [[ -n "$IMAGE_NAME" ]] || { echo "ERROR: could not determine loaded image name" >&2; exit 1; }
-          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Tag and push
-        run: |
-          docker tag "$IMAGE_NAME" "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64"
-          docker push "ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64"
+  # TODO: Add a native ARM64 runner job here when one is available.
+  # A cross-compiled arm64 image from an x86_64 runner would be mislabeled,
+  # so ARM64 support is deferred until a native runner (e.g. self-hosted arm64)
+  # is configured. Open a tracking issue and link it here when scheduling this work.
 
   manifest:
-    name: Create Multi-Arch Manifest
-    needs: [build-amd64, build-arm64]
+    name: Create Manifest
+    needs: [build-amd64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -94,6 +68,5 @@ jobs:
         run: |
           docker manifest create \
             ghcr.io/mstruble/agent-sandbox:${{ github.sha }} \
-            --amend ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64 \
-            --amend ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-arm64
+            --amend ghcr.io/mstruble/agent-sandbox:${{ github.sha }}-amd64
           docker manifest push ghcr.io/mstruble/agent-sandbox:${{ github.sha }}

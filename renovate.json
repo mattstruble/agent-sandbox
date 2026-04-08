@@ -6,7 +6,7 @@
   },
   "customManagers": [
     {
-      "description": "opencode version in packages/opencode.nix",
+      "description": "opencode version in packages/opencode.nix. NOTE: Renovate can only bump the version string; the sha256 hashes must be updated manually (or via nix-update) after each version bump — a stale hash causes a fetchurl mismatch failure.",
       "customType": "regex",
       "fileMatch": ["^packages/opencode\\.nix$"],
       "matchStrings": [
@@ -17,7 +17,7 @@
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
-      "description": "rtk version in packages/rtk.nix",
+      "description": "rtk version in packages/rtk.nix. NOTE: Renovate can only bump the version string; the sha256 hashes must be updated manually (or via nix-update) after each version bump — a stale hash causes a fetchurl mismatch failure.",
       "customType": "regex",
       "fileMatch": ["^packages/rtk\\.nix$"],
       "matchStrings": [
@@ -26,21 +26,11 @@
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "rtk-ai/rtk",
       "extractVersionTemplate": "^v(?<version>.*)$"
-    },
-    {
-      "description": "@anthropic-ai/claude-code npm version in flake.nix",
-      "customType": "regex",
-      "fileMatch": ["^flake\\.nix$"],
-      "matchStrings": [
-        "# renovate: datasource=npm depName=@anthropic-ai/claude-code\\n\\s*claudeCodeVersion = \"(?<currentValue>[\\d.]+)\";"
-      ],
-      "datasourceTemplate": "npm",
-      "depNameTemplate": "@anthropic-ai/claude-code"
     }
   ],
   "packageRules": [
     {
-      "description": "Group custom derivation updates (opencode, rtk, claude-code)",
+      "description": "Group custom derivation updates (opencode, rtk)",
       "groupName": "container-deps",
       "matchManagers": ["custom.regex"]
     },

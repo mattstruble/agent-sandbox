@@ -81,7 +81,6 @@ in
       defaultAgent = lib.mkOption {
         type = lib.types.enum [
           "opencode"
-          "claude"
         ];
         default = "opencode";
         description = "Default agent when --agent is not passed.";

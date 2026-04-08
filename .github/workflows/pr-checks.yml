@@ -53,6 +53,8 @@ jobs:
 
       - name: Scan with vulnix
         run: nix run nixpkgs#vulnix -- "$(nix path-info .#container-image)"
+        # vulnix is advisory-only during early development; failures do not block PRs.
+        # TODO: remove continue-on-error once the initial advisory backlog is triaged.
         continue-on-error: true
 
       - name: Trivy filesystem scan

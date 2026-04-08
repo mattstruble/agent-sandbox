@@ -40,7 +40,7 @@ usage() {
 Usage: agent-sandbox [OPTIONS] [WORKSPACE]
 
 Options:
-  -a, --agent <name>       Agent to run: opencode (default) or claude
+  -a, --agent <name>       Agent to run: opencode (default)
   -b, --pull               Force re-pull image from GHCR before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories (.ssh, .gnupg, etc.)
@@ -58,9 +58,7 @@ Arguments:
 
 Examples:
   agent-sandbox                        # opencode on current directory
-  agent-sandbox --agent claude         # claude-code on current directory
   agent-sandbox ~/projects/foo         # opencode on ~/projects/foo
-  agent-sandbox --agent claude ~/work  # claude-code on ~/work
   agent-sandbox --follow-symlinks      # mount workspace symlink targets
   agent-sandbox --mount ~/.kube        # mount kubectl config read-only
   agent-sandbox --mount ~/data:rw      # mount a directory read-write
@@ -68,7 +66,6 @@ Examples:
   agent-sandbox --pull                 # force image re-pull, then run
   agent-sandbox --list                 # show running sandboxes
   agent-sandbox --stop                 # stop all sandboxes for current directory
-  agent-sandbox --stop --agent claude  # stop only the claude sandbox
   agent-sandbox --stop ~/projects/foo  # stop all sandboxes for that path
   agent-sandbox --prune                # remove stale images
   agent-sandbox --update               # update to the latest version
@@ -166,6 +163,17 @@ parse_args() {
 			;;
 		esac
 	done
+
+	# Process any remaining positional arguments after '--'.
+	# After '--', option parsing stops; remaining args are positional only.
+	while [[ $# -gt 0 ]]; do
+		if [[ -z "$OPT_WORKSPACE" ]]; then
+			OPT_WORKSPACE="$1"
+		else
+			die "Unexpected argument: $1"
+		fi
+		shift
+	done
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +220,9 @@ do_update() {
 		die "GitHub API returned an invalid version string: '${latest_tag}'"
 	fi
 
-	# Compare versions
+	# Compare versions — string equality is intentional: the GitHub releases/latest
+	# API always returns the most recent release tag, so an exact match means we
+	# are already on the newest release.
 	if [[ "$latest_tag" == "$VERSION" ]]; then
 		log "Already up to date (v${VERSION})."
 		exit 0
@@ -234,6 +244,10 @@ do_update() {
 	fi
 
 	# Verify install.sh integrity against the release SHA256SUMS file.
+	# Trust model: HTTPS transport + SHA256 content hash. The warn-and-continue
+	# path on a missing SHA256SUMS file is an accepted risk for early releases
+	# that may not yet publish a SUMS file; the HTTPS channel still provides
+	# transport-level integrity.
 	# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
 	_sha256sum() {
 		if command -v sha256sum &>/dev/null; then
@@ -353,8 +367,8 @@ else:
 	local val
 	val=$(_cfg_get "defaults.agent")
 	if [[ -n "$val" ]]; then
-		if [[ "$val" != "opencode" && "$val" != "claude" ]]; then
-			die "Config error: defaults.agent must be 'opencode' or 'claude', got '$val'"
+		if [[ "$val" != "opencode" ]]; then
+			die "Config error: defaults.agent must be 'opencode', got '$val'"
 		fi
 		CFG_AGENT="$val"
 	fi
@@ -390,6 +404,9 @@ else:
 	# [resources] memory
 	val=$(_cfg_get "resources.memory")
 	if [[ -n "$val" ]]; then
+		if ! [[ "$val" =~ ^[0-9]+[kmgKMG]?$ ]]; then
+			die "Config error: resources.memory must be a number with optional unit (k/m/g), got '$val'"
+		fi
 		CFG_MEMORY="$val"
 	fi
 
@@ -411,8 +428,8 @@ apply_config_defaults() {
 	fi
 
 	# Validate agent value
-	if [[ "$OPT_AGENT" != "opencode" && "$OPT_AGENT" != "claude" ]]; then
-		die "--agent must be 'opencode' or 'claude', got '$OPT_AGENT'"
+	if [[ "$OPT_AGENT" != "opencode" ]]; then
+		die "--agent must be 'opencode', got '$OPT_AGENT'"
 	fi
 
 	# Apply config follow_symlinks
@@ -565,6 +582,11 @@ ensure_image() {
 		return
 	fi
 	if [[ -n "${AGENT_SANDBOX_IMAGE_PATH:-}" ]]; then
+		# AGENT_SANDBOX_IMAGE_PATH is set by the Nix app wrapper (flake.nix apps.default)
+		# and by the home-manager module's wrapProgram call. Any caller with control
+		# over the environment can set this variable to load an arbitrary image tarball;
+		# this is an accepted risk since environment control implies existing code
+		# execution capability.
 		load_image "$tag" "$AGENT_SANDBOX_IMAGE_PATH"
 		return
 	fi
@@ -699,7 +721,9 @@ collect_symlink_mounts() {
 			fi
 		fi
 
-		# Deduplicate by resolved target path (exact line match)
+		# Deduplicate by resolved target path (exact line match).
+		# _seen_targets is a newline-delimited string used as a set; grep -qFx
+		# matches the full line exactly (no regex, no partial matches).
 		if printf '%s\n' "$_seen_targets" | grep -qFx "$target"; then
 			continue
 		fi
@@ -795,17 +819,24 @@ assemble_mount_flags() {
 	# NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
 	# exec (which replaces the process). The staged dir persists for the container's
 	# lifetime — this is fine since the mount is read-only and permissions are tight.
+	#
+	# Double-trap pattern: register cleanup immediately after mktemp (unresolved path)
+	# so the directory is always removed on exit, even if portable_realpath fails.
+	# Then attempt to re-register with the resolved path (e.g. /tmp → /private/tmp on
+	# macOS) so Podman virtiofs bind-mounts work. If resolution fails, the original
+	# trap (unresolved path) remains active and still cleans up correctly.
 	_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
-	# Register cleanup trap immediately after mktemp so the directory is always
-	# removed on exit, even if portable_realpath fails before the trap is set.
 	# shellcheck disable=SC2064  # intentional: bake in the path at trap-set time
 	trap "rm -rf '${_stage_dir}'" EXIT
 	# Resolve /tmp -> /private/tmp on macOS so Podman virtiofs bind-mounts work.
-	_stage_dir=$(portable_realpath "$_stage_dir")
+	# Guard: only re-register if resolution succeeds; keep original trap on failure.
+	_resolved_stage_dir=$(portable_realpath "$_stage_dir" 2>/dev/null) || true
+	if [[ -n "$_resolved_stage_dir" ]]; then
+		_stage_dir="$_resolved_stage_dir"
+		# shellcheck disable=SC2064
+		trap "rm -rf '${_stage_dir}'" EXIT
+	fi
 	chmod 700 "$_stage_dir"
-	# Re-register trap with the resolved path so cleanup uses the canonical path.
-	# shellcheck disable=SC2064
-	trap "rm -rf '${_stage_dir}'" EXIT
 
 	# OpenCode config (ro, only if dir exists)
 	if [[ -d "${HOME}/.config/opencode" ]]; then
@@ -814,16 +845,6 @@ assemble_mount_flags() {
 			MOUNT_FLAGS+=("-v" "$_stage_dir/opencode:/host-config/opencode/:ro${MOUNT_Z}")
 		else
 			warn "Failed to stage opencode config (symlink resolution failed) — skipping"
-		fi
-	fi
-
-	# Claude config (ro, only if dir exists)
-	if [[ -d "${HOME}/.claude" ]]; then
-		mkdir -p "$_stage_dir/claude"
-		if cp -RL "${HOME}/.claude/." "$_stage_dir/claude/"; then
-			MOUNT_FLAGS+=("-v" "$_stage_dir/claude:/host-config/claude/:ro${MOUNT_Z}")
-		else
-			warn "Failed to stage claude config (symlink resolution failed) — skipping"
 		fi
 	fi
 

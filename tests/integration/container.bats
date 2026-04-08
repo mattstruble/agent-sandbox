@@ -60,12 +60,6 @@ teardown() {
 }
 
 # bats test_tags=integration
-@test "image: claude binary exists and is executable" {
-    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" claude
-    assert_success
-}
-
-# bats test_tags=integration
 @test "image: rtk binary exists and is executable" {
     run "$RUNTIME" run --rm --entrypoint which "$IMAGE" rtk
     assert_success
@@ -225,45 +219,6 @@ teardown() {
         "$IMAGE"
     assert_success
 }
-
-# bats test_tags=integration
-@test "nix: entrypoint appends Nix instructions to CLAUDE.md" {
-    # Run the entrypoint with a fake agent that checks CLAUDE.md content.
-    _TEST_WORKSPACE="$(make_tempdir)"
-    _TEST_AGENT="$(make_temp)"
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'grep -q "Runtime Package Management" ~/.claude/CLAUDE.md' \
-        > "$_TEST_AGENT"
-    chmod +x "$_TEST_AGENT"
-
-    # Determine claude binary path inside the image
-    local claude_path
-    claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" claude 2>/dev/null || true)
-    if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
-        skip "claude binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=claude \
-        -v "${_TEST_WORKSPACE}:/workspace:rw" \
-        -v "${_TEST_AGENT}:${claude_path}:ro" \
-        "$IMAGE"
-    assert_success
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Section 1c: Static Files
-# ─────────────────────────────────────────────────────────────────────────────
 
 # bats test_tags=integration
 @test "static files: /etc/agent-sandbox/nix-instructions.md exists and is readable" {
@@ -580,45 +535,6 @@ teardown() {
     assert_output --partial '"bash": "allow"'
     assert_output --partial '"edit": "allow"'
     assert_output --partial '"webfetch": "allow"'
-}
-
-# bats test_tags=integration
-@test "entrypoint: claude agent path executes claude binary" {
-    # For the claude agent, the entrypoint runs `exec claude --dangerously-skip-permissions`.
-    # We verify the entrypoint reaches that point by mounting a fake claude over the real one.
-    _TEST_WORKSPACE=$(make_tempdir)
-    _TEST_AGENT=$(make_temp)
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'echo "FAKE_CLAUDE_MARKER: agent-sandbox-test-sentinel"' \
-        'exit 0' > "$_TEST_AGENT"
-    chmod +x "$_TEST_AGENT"
-
-    # Determine where claude is installed inside the image (globally via npm, on PATH).
-    local claude_path
-    claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" claude 2>/dev/null || true)
-
-    # Validate the path is absolute before using it in a volume mount.
-    if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
-        skip "claude binary path could not be determined or is not absolute: '${claude_path}'"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=claude \
-        -v "${_TEST_AGENT}:${claude_path}:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
-        "$IMAGE"
-    assert_success
-    assert_output --partial "FAKE_CLAUDE_MARKER"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

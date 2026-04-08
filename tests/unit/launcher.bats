@@ -74,13 +74,6 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: --agent claude sets OPT_AGENT to claude" {
-    parse_args --agent claude
-
-    [[ "$OPT_AGENT" == "claude" ]]
-}
-
-# bats test_tags=unit
 @test "parse_args: -a shorthand sets OPT_AGENT" {
     parse_args -a opencode
 
@@ -245,13 +238,11 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: -- stops option processing and remaining args are dropped" {
-    # NOTE: The production parse_args implementation does `shift; break` on `--`,
-    # which exits the while loop immediately. Any arguments after `--` are silently
-    # dropped — OPT_WORKSPACE stays empty. This is a known production behavior.
+@test "parse_args: -- stops option processing and remaining args become positional" {
+    # After `--`, remaining arguments are treated as positional args.
     parse_args -- /my/workspace
 
-    [[ "$OPT_WORKSPACE" == "" ]]
+    [[ "$OPT_WORKSPACE" == "/my/workspace" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -261,16 +252,16 @@ teardown() {
 # bats test_tags=unit
 @test "apply_config_defaults: empty OPT_AGENT falls back to CFG_AGENT" {
     parse_args
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     apply_config_defaults
 
-    [[ "$OPT_AGENT" == "claude" ]]
+    [[ "$OPT_AGENT" == "opencode" ]]
 }
 
 # bats test_tags=unit
 @test "apply_config_defaults: CLI --agent takes precedence over CFG_AGENT" {
     parse_args --agent opencode
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     apply_config_defaults
 
     [[ "$OPT_AGENT" == "opencode" ]]
@@ -284,7 +275,7 @@ teardown() {
     run apply_config_defaults
 
     assert_failure
-    assert_output --partial "must be 'opencode' or 'claude'"
+    assert_output --partial "must be 'opencode'"
 }
 
 # bats test_tags=unit
@@ -329,7 +320,7 @@ teardown() {
     # parse_config only resets arrays (CFG_EXTRA_VARS, CFG_EXTRA_PATHS) when the
     # file is missing — it does NOT reset scalar values. Set them to non-default
     # values first to verify they are preserved (not reset) on a missing file.
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     CFG_MEMORY="32g"
     CFG_CPUS=16
     CFG_FOLLOW_SYMLINKS=true
@@ -338,7 +329,7 @@ teardown() {
     parse_config
 
     # Scalar values must be unchanged (parse_config is a no-op for scalars when file is missing)
-    [[ "$CFG_AGENT"           == "claude" ]]
+    [[ "$CFG_AGENT"           == "opencode" ]]
     [[ "$CFG_MEMORY"          == "32g"    ]]
     [[ "$CFG_CPUS"            -eq 16      ]]
     [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
@@ -351,7 +342,7 @@ teardown() {
     CONFIG_FILE="${FIXTURE_DIR}/config-valid.toml"
     parse_config
 
-    [[ "$CFG_AGENT"           == "claude" ]]
+    [[ "$CFG_AGENT"           == "opencode" ]]
     [[ "$CFG_MEMORY"          == "16g"    ]]
     [[ "$CFG_CPUS"            -eq 8       ]]
     [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
@@ -372,7 +363,7 @@ teardown() {
     parse_config
 
     # Only agent was set in the partial config
-    [[ "$CFG_AGENT"  == "claude"  ]]
+    [[ "$CFG_AGENT"  == "opencode"  ]]
     # Other values should remain at defaults
     [[ "$CFG_MEMORY" == "8g"      ]]
     [[ "$CFG_CPUS"   -eq 4        ]]
@@ -495,14 +486,6 @@ teardown() {
 
     # Should match: agent-sandbox-opencode-my-project-<6chars>
     [[ "$result" =~ ^agent-sandbox-opencode-my-project-[0-9a-f]{6}$ ]]
-}
-
-# bats test_tags=unit
-@test "compute_container_name: returns expected pattern for claude agent" {
-    local result
-    result=$(compute_container_name "claude" "/home/user/my-project")
-
-    [[ "$result" =~ ^agent-sandbox-claude-my-project-[0-9a-f]{6}$ ]]
 }
 
 # bats test_tags=unit
@@ -973,8 +956,8 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "assemble_env_flags: AGENT reflects claude when OPT_AGENT=claude" {
-    OPT_AGENT="claude"
+@test "assemble_env_flags: AGENT reflects opencode when OPT_AGENT=opencode" {
+    OPT_AGENT="opencode"
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
@@ -984,7 +967,7 @@ teardown() {
     local found=false
     local i
     for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=claude" ]]; then
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=opencode" ]]; then
             found=true
             break
         fi

@@ -6,6 +6,9 @@
 
 let
   # renovate: datasource=github-releases depName=rtk-ai/rtk
+  # NOTE: When Renovate bumps this version, the sha256 hashes below must also
+  # be updated manually (e.g. via `nix-update`) — Renovate cannot fetch them
+  # automatically. A stale hash causes a fetchurl mismatch build failure.
   version = "0.34.2";
 
   src =
@@ -32,7 +35,7 @@ stdenv.mkDerivation {
     runHook preInstall
     mkdir -p $out/bin
     rtk_bin="$(find . -maxdepth 2 -name 'rtk' -type f | head -1)"
-    test -n "$rtk_bin"
+    test -n "$rtk_bin" || { echo "rtk binary not found in tarball"; exit 1; }
     install -m 0755 "$rtk_bin" $out/bin/rtk
     runHook postInstall
   '';

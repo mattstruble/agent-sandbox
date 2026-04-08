@@ -39,6 +39,7 @@
           # with allowUnfree = true (pkgs does not enable unfree). On darwin it
           # also targets the corresponding Linux arch so the build is delegated
           # to a Linux builder.
+          # allowUnfree is required for opencode and rtk (lib.licenses.unfree).
           linuxSystem = builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
           pkgsLinux = import nixpkgs {
             system = linuxSystem;
@@ -128,6 +129,35 @@
             }
           '';
 
+          # Static configuration files baked into the image.
+          # Using writeText (consistent with nixInstructionsFile and opencodePermissionsFile)
+          # keeps all static content in Nix expressions rather than inline heredocs,
+          # making them content-addressed and easier to audit.
+          nixConfFile = pkgsLinux.writeText "nix.conf" ''
+            experimental-features = nix-command flakes
+            sandbox = false
+            warn-dirty = false
+            accept-flake-config = false
+            substituters = https://cache.nixos.org
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+          '';
+
+          chronyConfFile = pkgsLinux.writeText "chrony.conf" ''
+            server 162.159.200.1 iburst
+            server 162.159.200.123 iburst
+            makestep 1 3
+            port 0
+            cmdport 0
+            driftfile /var/lib/chrony/drift
+          '';
+
+          sandboxBashrcFile = pkgsLinux.writeText "sandbox-bashrc" ''
+            command_not_found_handle() {
+                printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
+                return 127
+            }
+          '';
+
           # Container image contents — built entirely via pkgsLinux so the
           # derivation targets Linux regardless of the host system.
           # Defined before linuxPackages so linuxPackages can reference them
@@ -196,15 +226,8 @@
 
               # ── Nix configuration ────────────────────────────────────────────────
               mkdir -p etc/nix
-              chmod 0755 etc/nix
-              cat > etc/nix/nix.conf <<'NIXCONF'
-              experimental-features = nix-command flakes
-              sandbox = false
-              warn-dirty = false
-              accept-flake-config = false
-              substituters = https://cache.nixos.org
-              trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-              NIXCONF
+              chmod 0555 etc/nix
+              cp ${nixConfFile} etc/nix/nix.conf
               chmod 0444 etc/nix/nix.conf
 
               # ── Flake registry (pinned nixpkgs) ──────────────────────────────────
@@ -213,14 +236,7 @@
 
               # ── Chrony configuration ─────────────────────────────────────────────
               mkdir -p etc/chrony
-              cat > etc/chrony/chrony.conf <<'CHRONYCONF'
-              server 162.159.200.1 iburst
-              server 162.159.200.123 iburst
-              makestep 1 3
-              port 0
-              cmdport 0
-              driftfile /var/lib/chrony/drift
-              CHRONYCONF
+              cp ${chronyConfFile} etc/chrony/chrony.conf
 
               # ── Static agent-sandbox files ───────────────────────────────────────
               mkdir -p etc/agent-sandbox
@@ -230,12 +246,7 @@
               chmod 0444 etc/agent-sandbox/opencode-permissions.json
 
               # ── bashrc with command-not-found handler ────────────────────────────
-              cat > home/sandbox/.bashrc <<'BASHRC'
-              command_not_found_handle() {
-                  printf '%s: command not found. Try: nix run nixpkgs#%s\n' "$1" "$1" >&2
-                  return 127
-              }
-              BASHRC
+              cp ${sandboxBashrcFile} home/sandbox/.bashrc
               chown 1000:1000 home/sandbox/.bashrc
 
               # ── Entrypoint and firewall scripts ──────────────────────────────────
@@ -334,8 +345,8 @@
               meta = {
                 description = "Sandboxed AI coding agent environments using Podman containers";
                 longDescription = ''
-                  agent-sandbox wraps Podman (or Docker) to run AI coding agents (OpenCode,
-                  Claude Code) in isolated containers with iptables-based network allowlists,
+                  agent-sandbox wraps Podman (or Docker) to run AI coding agents (OpenCode)
+                  in isolated containers with iptables-based network allowlists,
                   SSH agent forwarding, and deterministic container naming.
                 '';
                 homepage = "https://github.com/mstruble/agent-sandbox";
@@ -352,8 +363,15 @@
 
           apps.default =
             let
+              imagePath = self'.packages.container-image;
               wrapper = pkgs.writeShellScript "agent-sandbox-run" ''
-                export AGENT_SANDBOX_IMAGE_PATH="${self'.packages.container-image}"
+                # imagePath is always a valid Nix store path string at evaluation time,
+                # but the file may not exist on disk until 'nix build .#container-image'
+                # has been run. Only export AGENT_SANDBOX_IMAGE_PATH when the file is
+                # present; otherwise the launcher falls back to pulling from GHCR.
+                if [[ -f "${imagePath}" ]]; then
+                  export AGENT_SANDBOX_IMAGE_PATH="${imagePath}"
+                fi
                 exec "${self'.packages.default}/bin/agent-sandbox" "$@"
               '';
             in

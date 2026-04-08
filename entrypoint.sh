@@ -13,11 +13,11 @@ die() {
 # ─── Validate $AGENT ──────────────────────────────────────────────────────────
 
 if [[ -z "${AGENT:-}" ]]; then
-	die "AGENT environment variable is not set. Must be 'opencode' or 'claude'."
+	die "AGENT environment variable is not set. Must be 'opencode'."
 fi
 
-if [[ "$AGENT" != "opencode" && "$AGENT" != "claude" ]]; then
-	die "AGENT='$AGENT' is not valid. Must be 'opencode' or 'claude'."
+if [[ "$AGENT" != "opencode" ]]; then
+	die "AGENT='$AGENT' is not valid. Must be 'opencode'."
 fi
 
 log "Starting sandbox for agent: $AGENT"
@@ -25,6 +25,8 @@ log "Starting sandbox for agent: $AGENT"
 # ─── Phase 1: Root operations ─────────────────────────────────────────────────
 # The container starts as root so the firewall can be established without sudo.
 # After firewall setup, we re-exec this script as the sandbox user via su-exec.
+# _SANDBOX_PHASE2 prevents infinite re-exec; phase guard uses the env var rather
+# than id -u because su-exec drops privileges before re-exec.
 
 if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 	log "Running firewall setup..."
@@ -32,11 +34,12 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 	log "Firewall established."
 
 	log "Starting chronyd..."
-	if chronyd; then
-		log "chronyd started."
-	else
-		warn "chronyd failed to start — continuing without time synchronization."
-	fi
+	# Run chronyd in foreground mode, backgrounded by the shell. The background
+	# job always returns exit code 0 to the shell, so we cannot detect immediate
+	# failure here — if chronyd exits (e.g., missing SYS_TIME cap), it does so
+	# silently. Time synchronization is non-critical; the container continues.
+	chronyd -n &
+	log "chronyd launched in background."
 
 	# Re-exec as sandbox user; _SANDBOX_PHASE2 prevents infinite loop
 	log "Dropping to sandbox user..."
@@ -44,6 +47,7 @@ if [[ -z "${_SANDBOX_PHASE2:-}" ]]; then
 fi
 
 # ─── Phase 2: Sandbox operations (runs as sandbox user) ──────────────────────
+# Step numbers correspond to the entrypoint sequence documented in DESIGN.md.
 
 # ─── Step 2: Stage configs from read-only mounts to writable locations ────────
 
@@ -57,18 +61,6 @@ if [[ -d /host-config/opencode ]]; then
 	fi
 else
 	log "No opencode host config mounted, skipping."
-fi
-
-if [[ -d /host-config/claude ]]; then
-	log "Staging claude config..."
-	mkdir -p ~/.claude
-	if cp -a /host-config/claude/. ~/.claude/; then
-		log "claude config staged."
-	else
-		warn "Failed to copy claude config — continuing without it."
-	fi
-else
-	log "No claude host config mounted, skipping."
 fi
 
 # ─── Step 3: Append Nix usage instructions to agent prompt files ──────────────
@@ -89,12 +81,7 @@ if ! printf '%s' "$NIX_INSTRUCTIONS" >>~/.config/opencode/AGENTS.md; then
 	warn "Failed to append Nix instructions to AGENTS.md — continuing."
 fi
 
-mkdir -p ~/.claude
-if ! printf '%s' "$NIX_INSTRUCTIONS" >>~/.claude/CLAUDE.md; then
-	warn "Failed to append Nix instructions to CLAUDE.md — continuing."
-fi
-
-log "Nix usage instructions appended to agent prompt files."
+log "Nix usage instructions appended to AGENTS.md."
 
 # ─── Step 4: Apply OpenCode permission overrides ──────────────────────────────
 
@@ -104,24 +91,31 @@ log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
 mkdir -p ~/.config/opencode
 
 if [[ -f "$OPENCODE_CONFIG" ]]; then
-	# File exists — merge permission fields without removing other content
-	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX")
-	if jq '
+	# File exists — merge permission fields without removing other content.
+	# Use a flag to skip the jq/mv block if mktemp fails; `return` is not valid
+	# at top-level script scope (entrypoint.sh is executed, not sourced).
+	tmp=""
+	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") || {
+		warn "mktemp failed — continuing without permission overrides."
+	}
+	if [[ -n "$tmp" ]]; then
+		if jq '
     .permission.bash     = "allow" |
     .permission.edit     = "allow" |
     .permission.read     = "allow" |
     .permission.grep     = "allow" |
     .permission.webfetch = "allow"
   ' "$OPENCODE_CONFIG" >"$tmp"; then
-		if mv -f "$tmp" "$OPENCODE_CONFIG"; then
-			log "Permission overrides applied."
+			if mv -f "$tmp" "$OPENCODE_CONFIG"; then
+				log "Permission overrides applied."
+			else
+				rm -f "$tmp"
+				warn "mv failed — continuing without permission overrides."
+			fi
 		else
 			rm -f "$tmp"
-			warn "mv failed — continuing without permission overrides."
+			warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
 		fi
-	else
-		rm -f "$tmp"
-		warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
 	fi
 else
 	# File does not exist — copy default from static file
@@ -149,34 +143,18 @@ fi
 
 log "Running rtk init for agent: $AGENT..."
 
-if [[ "$AGENT" == "opencode" ]]; then
-	if rtk init -g --opencode; then
-		log "rtk init completed for opencode."
-	else
-		warn "rtk init failed for opencode — continuing without rtk."
-	fi
+if rtk init -g --opencode; then
+	log "rtk init completed for opencode."
 else
-	if rtk init -g; then
-		log "rtk init completed for claude."
-	else
-		warn "rtk init failed for claude — continuing without rtk."
-	fi
+	warn "rtk init failed for opencode — continuing without rtk."
 fi
 
 # ─── Step 6: Exec the agent ───────────────────────────────────────────────────
 
 cd /workspace || die "/workspace is not accessible — check that the workspace mount succeeded."
 
-if [[ "$AGENT" == "opencode" ]]; then
-	if ! command -v opencode &>/dev/null; then
-		die "opencode binary not found in PATH"
-	fi
-	log "Exec'ing opencode..."
-	exec opencode
-else
-	if ! command -v claude &>/dev/null; then
-		die "claude binary not found in PATH"
-	fi
-	log "Exec'ing claude..."
-	exec claude --dangerously-skip-permissions
+if ! command -v opencode &>/dev/null; then
+	die "opencode binary not found in PATH"
 fi
+log "Exec'ing opencode..."
+exec opencode

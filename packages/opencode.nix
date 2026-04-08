@@ -7,6 +7,9 @@
 
 let
   # renovate: datasource=github-releases depName=anomalyco/opencode
+  # NOTE: When Renovate bumps this version, the sha256 hashes below must also
+  # be updated manually (e.g. via `nix-update`) — Renovate cannot fetch them
+  # automatically. A stale hash causes a fetchurl mismatch build failure.
   version = "1.3.13";
 
   src =

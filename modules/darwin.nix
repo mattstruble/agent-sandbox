@@ -4,6 +4,11 @@
   pkgs,
   ...
 }:
+# NOTE: This module is intentionally ~95% identical to modules/nixos.nix.
+# The only difference is the containerPackage default (null on darwin,
+# pkgs.podman on NixOS). Shared logic has not been extracted to avoid
+# introducing an extra import indirection for what is a two-file module set.
+# If a third platform module is added, consider extracting a modules/common.nix.
 let
   cfg = config.programs.agent-sandbox;
 

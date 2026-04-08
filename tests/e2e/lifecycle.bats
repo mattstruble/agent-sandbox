@@ -165,16 +165,9 @@ _run_sandbox() {
 	# Inject the fake agent over the real agent binary.
 	# Determine the agent binary path dynamically from the image.
 	local agent_bin
-	if [[ "$OPT_AGENT" == "opencode" ]]; then
-		agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" opencode 2>/dev/null || true)
-		if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
-			skip "opencode binary path could not be determined in image $IMAGE_TAG"
-		fi
-	else
-		agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" claude 2>/dev/null || true)
-		if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
-			skip "claude binary path could not be determined in image $IMAGE_TAG"
-		fi
+	agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" opencode 2>/dev/null || true)
+	if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
+		skip "opencode binary path could not be determined in image $IMAGE_TAG"
 	fi
 	MOUNT_FLAGS+=("-v" "${FAKE_AGENT}:${agent_bin}:ro${MOUNT_Z}")
 
@@ -568,85 +561,7 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 10: AGENT env var — claude agent sets AGENT=claude
-# ---------------------------------------------------------------------------
-
-# bats test_tags=e2e
-@test "env passthrough: AGENT env var is set to 'claude' when --agent claude is passed" {
-	# Use a custom fake agent that prints the AGENT env var
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "AGENT_VALUE: ${AGENT:-unset}"
-exit 0
-AGENT
-
-	# Pre-compute the container name for teardown cleanup before any work that
-	# could fail (mirrors the _precompute_container_name pattern used by other tests)
-	_precompute_container_name --no-ssh --agent claude "$WORKSPACE_DIR"
-
-	# Build the run command manually for the claude agent: _run_sandbox injects
-	# the fake agent at the opencode path by default; for claude we need the
-	# claude binary path (determined dynamically from the image).
-	parse_args --no-ssh --agent claude "$WORKSPACE_DIR"
-	parse_config
-	apply_config_defaults
-	detect_runtime
-
-	USERNS_FLAG=""
-	[[ "$RUNTIME" == "podman" ]] && USERNS_FLAG="--userns=keep-id"
-	MOUNT_Z=""
-	[[ "$(uname -s)" == "Linux" ]] && MOUNT_Z=",z"
-
-	WORKSPACE=$(resolve_workspace "${OPT_WORKSPACE}")
-	CONTAINER_NAME=$(compute_container_name "$OPT_AGENT" "$WORKSPACE")
-
-	IMAGE_TAG="agent-sandbox:${VERSION}"
-
-	# Determine claude binary path dynamically from the image — do this before
-	# assemble_mount_flags to skip early if the path cannot be determined.
-	local claude_path
-	claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" claude 2>/dev/null || true)
-	if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
-		skip "claude binary path could not be determined"
-	fi
-
-	assemble_mount_flags
-	assemble_env_flags
-
-	# Inject fake agent at the claude binary path
-	MOUNT_FLAGS+=("-v" "${verify_agent}:${claude_path}:ro${MOUNT_Z}")
-
-	local cmd=(
-		run --rm -i
-		--name "$CONTAINER_NAME"
-		--sysctl=net.ipv6.conf.all.disable_ipv6=1
-		--sysctl=net.ipv6.conf.default.disable_ipv6=1
-		--sysctl=net.ipv6.conf.lo.disable_ipv6=1
-		--cap-drop=ALL
-		--cap-add=NET_ADMIN
-		--cap-add=NET_RAW
-		--cap-add=SETUID
-		--cap-add=SETGID
-		--cap-add=SYS_TIME
-		--security-opt=no-new-privileges
-		"--memory=${CFG_MEMORY}"
-		"--cpus=${CFG_CPUS}"
-	)
-	[[ -n "$USERNS_FLAG" ]] && cmd+=("$USERNS_FLAG")
-	cmd+=("${MOUNT_FLAGS[@]}" "${ENV_FLAGS[@]}" "$IMAGE_TAG")
-
-	run "$RUNTIME" "${cmd[@]}"
-
-	assert_success
-	assert_output --partial "AGENT_VALUE: claude"
-}
-
-# ---------------------------------------------------------------------------
-# Test 11: --no-ssh flag — AGENT_SANDBOX_NO_SSH is set in container
+# Test 10: --no-ssh flag — AGENT_SANDBOX_NO_SSH is set in container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e

@@ -5,7 +5,7 @@
 
 ## Overview
 
-`agent-sandbox` is a Nix flake that packages a bash launcher wrapping Podman to run AI coding agents (OpenCode, Claude Code) in isolated containers. Each sandbox provides:
+`agent-sandbox` is a Nix flake that packages a bash launcher wrapping Podman to run AI coding agents (OpenCode) in isolated containers. Each sandbox provides:
 
 - The current directory (or an explicit path) mounted as `/workspace`
 - Agent dotfiles and git config staged from the host then made writable inside the container
@@ -56,7 +56,7 @@ agent-sandbox/
 agent-sandbox [OPTIONS] [WORKSPACE]
 
 Options:
-  -a, --agent <name>       Agent to run: opencode (default) or claude
+  -a, --agent <name>       Agent to run: opencode (default)
   -b, --pull               Force re-pull image from GHCR before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories
@@ -73,9 +73,7 @@ Arguments:
 
 Examples:
   agent-sandbox                        # opencode on current directory
-  agent-sandbox --agent claude         # claude-code on current directory
   agent-sandbox ~/projects/foo         # opencode on ~/projects/foo
-  agent-sandbox --agent claude ~/work  # claude-code on ~/work
   agent-sandbox --follow-symlinks      # mount workspace symlink targets
   agent-sandbox --mount ~/.kube        # mount kubectl config read-only
   agent-sandbox --mount ~/data:rw      # mount a directory read-write
@@ -83,7 +81,6 @@ Examples:
   agent-sandbox --pull                # force image re-pull, then run
   agent-sandbox --list                 # show running sandboxes
   agent-sandbox --stop                 # stop all sandboxes for current directory
-  agent-sandbox --stop --agent claude  # stop only the claude sandbox
   agent-sandbox --stop ~/projects/foo  # stop all sandboxes for that path
   agent-sandbox --prune                # remove stale images
   agent-sandbox --version              # print version
@@ -91,7 +88,7 @@ Examples:
 
 **Container naming** is deterministic: `agent-sandbox-<agent>-<workspace-basename>-<6-char-hash>` where the hash is derived from the absolute workspace path. Example: `agent-sandbox-opencode-myproject-a3f2b1`. Same workspace always maps to the same name; different workspaces with the same basename still get unique names. `--list` and `--stop` use this naming to find the right container.
 
-**`--stop` behavior:** Without `--agent`, stops all `agent-sandbox-*` containers for the given workspace (both opencode and claude if running). With `--agent`, stops only the container for that specific agent. If no matching container is running, exits 0 silently.
+**`--stop` behavior:** Without `--agent`, stops all `agent-sandbox-*` containers for the given workspace. With `--agent`, stops only the container for that specific agent. If no matching container is running, exits 0 silently.
 
 **`--prune` behavior:** Lists all local `agent-sandbox:*` images, removes any whose tag does not match the launcher's current version, and prints the images removed and space freed.
 
@@ -120,7 +117,6 @@ Examples:
 | `nix` | nixpkgs (bundled via `dockerTools.buildLayeredImage`) |
 | `opencode` | Custom derivation (`packages/opencode.nix`) — `fetchurl` from GitHub releases, per-architecture |
 | `rtk` | Custom derivation (`packages/rtk.nix`) — `fetchurl` from GitHub releases, per-architecture |
-| `claude-code` | `npm install -g --ignore-scripts @anthropic-ai/claude-code@X.Y.Z` via Nix-provided nodejs |
 
 **User management:** A `sandbox` user (UID 1000) is defined in the Nix expression. `/etc/passwd`, `/etc/group`, and `/etc/shadow` are generated directly by the Nix build (same pattern as upstream NixOS/nix `docker.nix`). No `useradd` or `shadow` package is needed at runtime.
 
@@ -130,7 +126,7 @@ Examples:
 
 **Image tagging:** `agent-sandbox:<version>` for releases, `agent-sandbox:<commit-sha>` for CI builds. The launcher knows its own version and pulls the matching tag from GHCR.
 
-**Multi-architecture:** The image is built natively for both `linux/amd64` and `linux/arm64`. CI uses two runners (one per architecture) and publishes a multi-arch manifest.
+**Multi-architecture:** The image is currently built for `linux/amd64` only. ARM64 support is deferred until a native ARM runner is available for CI. Cross-compiling from x86_64 would produce a mislabeled image.
 
 ---
 
@@ -140,7 +136,7 @@ Nix is included in the container image at build time via `dockerTools.buildLayer
 
 **PATH integration:** The Nix binary directory is added to `PATH` via the image's `Env` configuration. This ensures `nix` is available in all shell contexts — interactive, non-interactive, and subshells — without relying on shell profile sourcing.
 
-**Immutable configuration:** Nix settings live in `/etc/nix/` (root-owned, mode `0444`):
+**Immutable configuration:** Nix settings live in `/etc/nix/` (root-owned, mode `0555`):
 
 | File | Purpose |
 |---|---|
@@ -169,7 +165,7 @@ trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDS
 
 **Arbitrary flake URIs:** The agent can use any flake URI (e.g., `nix run github:user/repo#thing`). This is intentionally unrestricted — the container boundary is the security layer, and `curl`, `uvx`, and `npx` already allow arbitrary remote code execution.
 
-**Agent awareness:** The entrypoint appends Nix usage instructions to each agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode, `~/.claude/CLAUDE.md` for Claude Code) at session start, telling the agent to prefer `nix run`/`nix shell` for tools not on PATH. The instructions text is stored as a static file at `/etc/agent-sandbox/nix-instructions.md` in the image. A `command_not_found_handle` function in `/home/sandbox/.bashrc` provides a reactive fallback — when the agent runs an unrecognized command, the shell suggests `nix run nixpkgs#<cmd>` in the error output.
+**Agent awareness:** The entrypoint appends Nix usage instructions to the agent's system prompt file (`~/.config/opencode/AGENTS.md` for OpenCode) at session start, telling the agent to prefer `nix run`/`nix shell` for tools not on PATH. The instructions text is stored as a static file at `/etc/agent-sandbox/nix-instructions.md` in the image. A `command_not_found_handle` function in `/home/sandbox/.bashrc` provides a reactive fallback — when the agent runs an unrecognized command, the shell suggests `nix run nixpkgs#<cmd>` in the error output.
 
 ---
 
@@ -182,7 +178,6 @@ Host agent config directories are **staged** at read-only mount points rather th
 | `<workspace>` | `/workspace` | `rw,z` |
 | `~/.gitconfig` | `/home/sandbox/.gitconfig` | `ro,z` |
 | `~/.config/opencode/` | `/host-config/opencode/` | `ro,z` (if exists on host) |
-| `~/.claude/` | `/host-config/claude/` | `ro,z` (if exists on host) |
 | `$SSH_AUTH_SOCK` | `/tmp/ssh_auth_sock` | `ro,z` (unless `--no-ssh`) |
 | Extra mounts (config.toml / `--mount`) | Home-relative path in container | `ro,z` by default (`:rw` opt-in) |
 
@@ -221,17 +216,12 @@ Runs inside the container in this order:
 
 1. Run `/init-firewall.sh` as root to establish iptables port-based network filter and disable IPv6 — **first**, before any other step
 2. Start `chronyd` as root for time synchronization; if it fails to start, log a warning and continue
-3. Drop to the `sandbox` user via `su-exec`; steps 4–9 run as `sandbox`
+3. Drop to the `sandbox` user via `su-exec`; steps 4–8 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
-5. Copy `/host-config/claude/` → `~/.claude/` (writable); skip if not mounted
-6. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`; create files if absent
-7. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
-8. Based on `$AGENT` env var (set by launcher):
-   - `opencode`: run `rtk init -g --opencode`
-   - `claude`: run `rtk init -g`
-9. `exec` the agent binary with `/workspace` as working directory:
-   - `opencode`: `exec ~/.opencode/bin/opencode`
-   - `claude`: `exec claude --dangerously-skip-permissions`
+5. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md`; create file if absent
+6. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
+7. Run `rtk init -g --opencode`
+8. `exec opencode` with `/workspace` as working directory
 
 The firewall runs first to eliminate any unprotected network window. `rtk init` is a local-only operation and runs safely behind the established firewall.
 
@@ -325,8 +315,7 @@ Built with `dockerTools.buildLayeredImage` following the pattern from NixOS/nix 
 4. Pins the flake registry to the same nixpkgs revision as `flake.lock`
 5. Includes static files at `/etc/agent-sandbox/` (Nix instructions, default permissions JSON)
 6. Includes `entrypoint.sh` and `init-firewall.sh`
-7. Installs `claude-code` via npm in a build step
-8. Configures the OCI image: entrypoint, env vars, labels, user
+7. Configures the OCI image: entrypoint, env vars, labels, user
 
 The image is produced as a tarball: `nix build .#container-image` outputs a file loadable via `docker load < result` or `podman load < result`.
 
@@ -334,7 +323,7 @@ The image is produced as a tarball: `nix build .#container-image` outputs a file
 
 Binaries not available in nixpkgs have custom derivations:
 
-- **`packages/opencode.nix`** — `fetchurl` from GitHub releases with per-architecture URLs (`x64`/`arm64`) and SHA256 hashes. Extracts the tarball, installs the binary, and runs `opencode db migrate` at build time.
+- **`packages/opencode.nix`** — `fetchurl` from GitHub releases with per-architecture URLs (`x64`/`arm64`) and SHA256 hashes. Extracts the tarball and installs the binary.
 - **`packages/rtk.nix`** — `fetchurl` from GitHub releases with per-architecture URLs and SHA256 hashes.
 
 Both derivations use `stdenv.hostPlatform` to select the correct architecture variant.
@@ -392,7 +381,7 @@ Adds `package` and `containerPackage` (when non-null) to `home.packages`. Additi
 
 | Option | Type | Default | config.toml key |
 |---|---|---|---|
-| `settings.defaultAgent` | `enum [ "opencode" "claude" ]` | `"opencode"` | `defaults.agent` |
+| `settings.defaultAgent` | `enum [ "opencode" ]` | `"opencode"` | `defaults.agent` |
 | `settings.env.extraVars` | `listOf str` | `[]` | `env.extra_vars` |
 | `settings.workspace.followSymlinks` | `bool` | `false` | `workspace.follow_symlinks` |
 | `settings.workspace.followAllSymlinks` | `bool` | `false` | `workspace.follow_all_symlinks` |
@@ -412,7 +401,6 @@ When all settings are at their defaults, no config file is generated — the lau
   programs.agent-sandbox = {
     enable = true;
     settings = {
-      defaultAgent = "claude";
       resources.memory = "16g";
       resources.cpus = 8;
     };
@@ -463,15 +451,17 @@ All three jobs are required to pass before merge.
 
 ### Image Publishing (`publish-image.yml`)
 
-Triggered on push to main. Runs on two runners (`ubuntu-latest` for x86_64, ARM runner for aarch64):
+Triggered on push to main. Runs on `ubuntu-latest` (x86_64):
 
-1. `nix build .#container-image` on each architecture
+1. `nix build .#container-image` on x86_64
 2. `docker load` the tarball
-3. Tag as `ghcr.io/mstruble/agent-sandbox:<commit-sha>-<arch>`
-4. Push arch-specific images to GHCR
-5. Create and push a multi-arch manifest as `ghcr.io/mstruble/agent-sandbox:<commit-sha>`
-6. `vulnix` scan on the image closure
+3. Tag as `ghcr.io/mstruble/agent-sandbox:<commit-sha>-amd64`
+4. Push arch-specific image to GHCR
+5. Create and push a manifest as `ghcr.io/mstruble/agent-sandbox:<commit-sha>`
+6. `vulnix` scan on the image closure (advisory-only; non-blocking during early development)
 7. Add OCI labels: `org.opencontainers.image.version`, `org.opencontainers.image.source`, `org.opencontainers.image.revision`
+
+ARM64 support is deferred until a native ARM runner is available.
 
 ### Release Please (`release-please.yml`)
 
@@ -514,9 +504,8 @@ For the GHCR-published image (non-Nix distribution path), the version is baked i
 - `flake.lock` — Renovate's nix manager runs `nix flake update`. This updates nixpkgs and all nixpkgs-sourced packages (git, curl, iptables, chrony, jq, nodejs, gh, uv, su-exec, etc.) in one operation.
 
 **Custom derivations** (single PR):
-- `opencode` — regex manager matching the version string and SHA256 hash in `packages/opencode.nix`
-- `rtk` — regex manager matching the version string and SHA256 hash in `packages/rtk.nix`
-- `claude-code` — regex manager matching the npm version string in the container image Nix expression
+- `opencode` — regex manager matching the version string in `packages/opencode.nix`; SHA256 hashes must be updated manually after each version bump
+- `rtk` — regex manager matching the version string in `packages/rtk.nix`; SHA256 hashes must be updated manually after each version bump
 
 **GitHub Actions** (single PR):
 - Action versions in workflow files — Renovate's github-actions manager
@@ -542,7 +531,7 @@ Configured on the repository (not via workflow):
 |---|---|---|
 | Container image build | `dockerTools.buildLayeredImage` from Nix, no Containerfile | Single package manager (Nix) for all dependencies; eliminates Debian+apt+curl+npm+COPY-from hybrid; reproducible, content-addressed images |
 | su-exec privilege drop | Root → sandbox via `su-exec`; no sudo installed | Entrypoint runs firewall as root, then irrevocably drops to sandbox; `su-exec` is smaller than `gosu` and idiomatic in minimal/Nix containers |
-| Multi-architecture | Native builds on x86_64 and aarch64 runners, multi-arch manifest | Avoids cross-compilation complexity; ARM Mac users get native images instead of emulation |
+| Multi-architecture | amd64-only for now; ARM64 deferred until native runner available | Cross-compiling from x86_64 produces a mislabeled image; native builds are required for correctness |
 | Image distribution | Pull-only from GHCR; no local build path | Users pull pre-built images; eliminates need to ship Containerfile; Nix users can build locally via `nix build .#container-image` |
 | Custom derivations | `packages/opencode.nix`, `packages/rtk.nix` | Isolates version+hash per tool; clean Renovate regex targets; keeps `flake.nix` readable |
 | Vulnerability scanning | `vulnix` on Nix store closure + Trivy filesystem scan | `vulnix` understands Nix derivations (Trivy cannot enumerate packages in Nix images); Trivy fs scan catches non-package concerns |
@@ -563,8 +552,8 @@ Configured on the repository (not via workflow):
 | Release automation | Release Please with conventional commits | Deterministic semver from commit history; auto-generated changelogs |
 | Image publishing | SHA on main, semver+latest on release | Every main commit is pullable; releases are stable, never rebuilt |
 | Release re-tag | Pull existing SHA image, re-tag | Release image is byte-identical to what was tested on main |
-| Dependency updates | Renovate with `flake.lock` + regex managers for custom derivations | `flake.lock` handles most packages; regex managers for opencode/rtk/claude-code |
-| CI runner | `ubuntu-latest` (x86_64) + ARM runner (aarch64) + `DeterminateSystems/nix-installer-action` | Native multi-arch builds; no cross-compilation |
+| Dependency updates | Renovate with `flake.lock` + regex managers for custom derivations | `flake.lock` handles most packages; regex managers for opencode/rtk (SHA256 must be updated manually) |
+| CI runner | `ubuntu-latest` (x86_64) + `DeterminateSystems/nix-installer-action` | Native amd64 builds; ARM64 deferred until native runner available |
 | Security scanning | `vulnix` on Nix closure + Trivy filesystem | `vulnix` understands Nix; Trivy covers non-package concerns |
 | Branch protection | Required checks + squash-merge | Ensures clean conventional commit history for Release Please |
 | Flake framework | `flake-parts` over `flake-utils` | Supports both per-system (packages, apps) and system-agnostic (modules) outputs cleanly |
@@ -572,7 +561,7 @@ Configured on the repository (not via workflow):
 | Config generation | `pkgs.formats.toml` via `xdg.configFile` | Standard Nix approach; only writes config when settings differ from defaults |
 | Container runtime option | `containerPackage` with per-platform default | More flexible than a boolean toggle; lets users pass any runtime package or null to self-manage |
 | Nix in-container | Bundled via `dockerTools.buildLayeredImage`, no separate install step, ephemeral store | Agent can install arbitrary packages on demand without root; no state leaks between sessions |
-| Nix config immutability | `/etc/nix/` root-owned, `0444` files, generated by Nix build | Agent cannot modify substituters, experimental features, or trust settings |
+| Nix config immutability | `/etc/nix/` root-owned, mode `0555`; `0444` files, generated by Nix build | Agent cannot modify substituters, experimental features, or trust settings |
 | Nix substituters | `cache.nixos.org` only | No third-party binary caches; source builds from arbitrary flakes still allowed |
 | Nix flake URI restrictions | None — arbitrary URIs allowed | Container boundary is the security layer; `curl`/`uvx`/`npx` already allow arbitrary remote code |
 | nixpkgs pinning | Flake registry derived from `flake.lock` at build time | Single source of truth; binary cache hits; agent can override with explicit rev |
