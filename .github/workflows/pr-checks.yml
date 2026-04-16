@@ -49,14 +49,14 @@ jobs:
         run: docker build -f Containerfile -t agent-sandbox:ci-test .
 
       - name: Trivy container scan
-        uses: aquasecurity/trivy-action@v0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: agent-sandbox:ci-test
           severity: HIGH,CRITICAL
           exit-code: '1'
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           scan-ref: .
