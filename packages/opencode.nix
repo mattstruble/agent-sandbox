@@ -2,7 +2,6 @@
   lib,
   stdenv,
   fetchurl,
-  autoPatchelfHook,
 }:
 
 let
@@ -34,7 +33,11 @@ stdenv.mkDerivation {
 
   sourceRoot = ".";
 
-  nativeBuildInputs = [ autoPatchelfHook ];
+  # Bun-compiled binary: JavaScript bytecode is appended after the ELF
+  # sections with a trailer sentinel. strip removes this trailing data,
+  # causing the runtime to fall back to plain Bun. Same applies to any
+  # binary that embeds data past the ELF (Deno compile, Node.js SEA).
+  dontStrip = true;
 
   installPhase = ''
     runHook preInstall

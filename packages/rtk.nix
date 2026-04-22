@@ -2,6 +2,7 @@
   lib,
   stdenv,
   fetchurl,
+  autoPatchelfHook,
 }:
 
 let
@@ -32,6 +33,9 @@ stdenv.mkDerivation {
   inherit version src;
 
   sourceRoot = ".";
+
+  nativeBuildInputs = [ autoPatchelfHook ];
+  buildInputs = [ stdenv.cc.cc.lib ];
 
   installPhase = ''
     runHook preInstall

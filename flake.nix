@@ -279,6 +279,24 @@
               chown 1000:1000 var/lib/chrony
               mkdir -p tmp
               chmod 1777 tmp
+
+              # ── Dynamic linker for unpatched binaries ────────────────────────────
+              # opencode is a Bun-compiled binary that cannot be patched with
+              # autoPatchelfHook (patching breaks embedded JS sentinel detection).
+              # Provide the conventional dynamic linker path as a symlink to the
+              # Nix store glibc so the kernel can load the unpatched binary.
+              ${
+                if linuxSystem == "aarch64-linux" then
+                  ''
+                    mkdir -p lib
+                    ln -sf ${pkgsLinux.glibc}/lib/ld-linux-aarch64.so.1 lib/ld-linux-aarch64.so.1
+                  ''
+                else
+                  ''
+                    mkdir -p lib64
+                    ln -sf ${pkgsLinux.glibc}/lib/ld-linux-x86-64.so.2 lib64/ld-linux-x86-64.so.2
+                  ''
+              }
             '';
 
             enableFakechroot = true;
@@ -294,6 +312,7 @@
                 "RTK_TELEMETRY_DISABLED=1"
                 "HOME=/home/sandbox"
                 "NIX_CONF_DIR=/etc/nix"
+                "LD_LIBRARY_PATH=${pkgsLinux.glibc}/lib"
               ];
               Labels = {
                 "org.opencontainers.image.title" = "agent-sandbox";
