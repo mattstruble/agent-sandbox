@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-e2e test-fast ensure-image _check-runtime _check-bats-lib
+.PHONY: test test-unit test-integration test-e2e test-fast ensure-image clean _check-runtime _check-bats-lib
 
 # Auto-detect container runtime: prefer podman, fall back to docker.
 RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
@@ -50,3 +50,16 @@ ensure-image: _check-runtime
 	else \
 		echo "[test] Image $(IMAGE_TAG) already exists, skipping build."; \
 	fi
+
+# Remove all agent-sandbox containers (running + stopped) and images (all tags).
+# Use this for a clean slate before rebuilding; distinct from the launcher's
+# --stop (workspace-scoped) and --prune (keeps current version).
+clean: _check-runtime
+	@echo "[clean] Stopping and removing all agent-sandbox containers..."
+	@"$(RUNTIME)" ps -a --filter "name=agent-sandbox-" --format "{{.Names}}" 2>/dev/null | \
+		while IFS= read -r name; do [ -n "$$name" ] && "$(RUNTIME)" rm -f "$$name" 2>/dev/null; done; true
+	@echo "[clean] Removing all agent-sandbox images..."
+	@"$(RUNTIME)" images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | \
+		grep -E "^(localhost/)?agent-sandbox:" | \
+		while IFS= read -r img; do [ -n "$$img" ] && "$(RUNTIME)" rmi -f "$$img" 2>/dev/null; done; true
+	@echo "[clean] Done."
