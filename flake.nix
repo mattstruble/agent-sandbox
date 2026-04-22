@@ -158,6 +158,21 @@
             }
           '';
 
+          # Minimal Nix CLI for the container — only the nix binary and its
+          # runtime library dependencies, with S3/AWS auth disabled (the
+          # container only fetches from cache.nixos.org over HTTPS).
+          # Uses nix-cli instead of nix-everything to exclude docs, man pages,
+          # Perl bindings, and the test-suite build gate.
+          nixMinimal =
+            let
+              components = pkgsLinux.nixVersions.nixComponents_2_34.overrideScope (
+                _finalScope: prevScope: {
+                  nix-store = prevScope.nix-store.override { withAWS = false; };
+                }
+              );
+            in
+            components.nix-cli;
+
           # Container image contents — built entirely via pkgsLinux so the
           # derivation targets Linux regardless of the host system.
           # Defined before linuxPackages so linuxPackages can reference them
@@ -183,6 +198,8 @@
               pkgsLinux.procps
               pkgsLinux.findutils
               pkgsLinux.coreutils
+              pkgsLinux.gnugrep
+              pkgsLinux.gawk
               pkgsLinux.iptables
               pkgsLinux.ipset
               pkgsLinux.iproute2
@@ -194,7 +211,7 @@
               pkgsLinux.nodejs
               pkgsLinux.gh
               pkgsLinux.uv
-              pkgsLinux.nix
+              nixMinimal
               opencode
               rtk
               pkgsLinux.dockerTools.caCertificates
