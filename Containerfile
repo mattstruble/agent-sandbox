@@ -42,18 +42,18 @@ EOF
 # version bumps via Renovate without requiring checksum updates.
 
 RUN curl -fsSL \
-    "https://github.com/cli/cli/releases/download/v2.89.0/gh_2.89.0_linux_amd64.tar.gz" \
+    "https://github.com/cli/cli/releases/download/v2.91.0/gh_2.91.0_linux_amd64.tar.gz" \
     -o /tmp/gh.tar.gz \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
-    && install -m 0755 /tmp/gh_2.89.0_linux_amd64/bin/gh /usr/local/bin/gh \
-    && rm -rf /tmp/gh.tar.gz /tmp/gh_2.89.0_linux_amd64
+    && install -m 0755 /tmp/gh_2.91.0_linux_amd64/bin/gh /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz /tmp/gh_2.91.0_linux_amd64
 
 # ─── rtk v0.34.2 ──────────────────────────────────────────────────────────────
 # Version-pinned; downloaded over TLS. No SHA256 checksum — enables automated
 # version bumps via Renovate without requiring checksum updates.
 
 RUN curl -fsSL \
-    "https://github.com/rtk-ai/rtk/releases/download/v0.34.2/rtk-x86_64-unknown-linux-musl.tar.gz" \
+    "https://github.com/rtk-ai/rtk/releases/download/v0.37.2/rtk-x86_64-unknown-linux-musl.tar.gz" \
     -o /tmp/rtk.tar.gz \
     && mkdir -p /tmp/rtk-extract \
     && tar -xzf /tmp/rtk.tar.gz -C /tmp/rtk-extract \
@@ -72,7 +72,7 @@ ENV RTK_TELEMETRY_DISABLED=1
 # Tag: 0.11.2 (also tagged: 0.11, latest)
 # Source: https://github.com/astral-sh/uv/pkgs/container/uv
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a1973ba753e7241ce3a08ef979ddd7bea5 \
+COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a \
     /uv /uvx /usr/local/bin/
 
 # ─── sandbox user ─────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in amd64) OC_ARCH="x64" ;; arm64) OC_ARCH="arm64" ;; *) echo "Unsupported arch: $ARCH" && exit 1 ;; esac \
     && mkdir -p /home/sandbox/.opencode/bin \
     && curl -fsSL \
-       "https://github.com/anomalyco/opencode/releases/download/v1.3.13/opencode-linux-${OC_ARCH}.tar.gz" \
+       "https://github.com/anomalyco/opencode/releases/download/v1.14.20/opencode-linux-${OC_ARCH}.tar.gz" \
        -o /tmp/opencode.tar.gz \
     && tar -xzf /tmp/opencode.tar.gz -C /home/sandbox/.opencode/bin \
     && chmod 755 /home/sandbox/.opencode/bin/opencode \
