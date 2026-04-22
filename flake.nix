@@ -32,7 +32,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
-          version = "0.1.0";
+          version = "0.1.0"; # x-release-please-version
 
           # Linux nixpkgs instance — used for all container image contents.
           # On Linux, linuxSystem == system but pkgsLinux is a separate import

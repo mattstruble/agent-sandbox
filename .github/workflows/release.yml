@@ -54,16 +54,16 @@ jobs:
           # publish-image.yml may still be running when this workflow fires.
           # Retry for up to 30 minutes (30 attempts × 60s).
           BASE="ghcr.io/mstruble/agent-sandbox"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker manifest inspect "${BASE}:${SHA}" > /dev/null 2>&1 && \
                docker manifest inspect "${BASE}:${SHA}-amd64" > /dev/null 2>&1; then
               echo "Manifest and arch tags available after attempt ${i}"
               exit 0
             fi
-            echo "Attempt ${i}/30: not yet available, retrying in 60s..."
+            echo "Attempt ${i}/60: not yet available, retrying in 60s..."
             sleep 60
           done
-          echo "ERROR: manifest ${BASE}:${SHA} (or arch tags) not available after 30 minutes" >&2
+          echo "ERROR: manifest ${BASE}:${SHA} (or arch tags) not available after 60 minutes" >&2
           exit 1
 
       - name: Retag as semver
