@@ -7,7 +7,7 @@ Behaviors covered:
 - Argument parsing logic is testable for all flags, invalid inputs, and defaults.
 - Config TOML loading is testable for valid config, missing config, partial config, and invalid TOML.
 - Container name generation produces deterministic names and handles special characters in paths.
-- Image tag computation (SHA256 of Containerfile) is testable in isolation.
+- Image tag computation is testable in isolation (version-based tagging).
 - Symlink resolution is testable with filesystem fixtures covering `follow_symlinks`, `follow_all_symlinks`, nested symlinks, broken symlinks, and symlinks into dotfile directories.
 - Dotfile directory protection rejects mounts that would expose sensitive directories.
 - Extra mount path validation is testable.
@@ -22,9 +22,8 @@ Bats unit tests that source `agent-sandbox.sh` and exercise individual functions
 
 ### Argument parsing
 - [ ] `--agent opencode` sets the agent to opencode.
-- [ ] `--agent claude` sets the agent to claude.
 - [ ] `--agent invalid` exits with a non-zero code and an error message.
-- [ ] `--no-ssh`, `--follow-symlinks`, `--follow-all-symlinks`, `--build`, `--list`, `--stop`, `--prune`, `--version` are all recognized.
+- [ ] `--no-ssh`, `--follow-symlinks`, `--follow-all-symlinks`, `--pull`, `--list`, `--stop`, `--prune`, `--version` are all recognized.
 - [ ] `--follow-all-symlinks` implies `--follow-symlinks`.
 - [ ] Unknown flags exit with a non-zero code and an error message.
 - [ ] Default values are correct when no flags are passed.
@@ -44,9 +43,8 @@ Bats unit tests that source `agent-sandbox.sh` and exercise individual functions
 - [ ] Special characters in paths (spaces, unicode) are handled without error.
 
 ### Image tag computation
-- [ ] The tag is a SHA256 hash of the Containerfile contents.
-- [ ] Changing the Containerfile contents changes the tag.
-- [ ] Whitespace-only changes to the Containerfile change the tag.
+- [ ] The tag matches the launcher's baked-in `@VERSION@` value.
+- [ ] The tag is used to check for and pull images from GHCR.
 
 ### Symlink resolution
 - [ ] `follow_symlinks` resolves depth-1 symlinks in the workspace to their targets.

@@ -5,7 +5,7 @@ PRD Capability Group: Testing & Validation — Test Infrastructure
 Behaviors covered:
 - Tests use bats-core with bats-assert and bats-support as the test framework.
 - A Makefile provides `test-unit`, `test-integration`, `test-e2e`, `test` (all), and `test-fast` (unit alias) targets.
-- Integration and e2e targets auto-build the container image if not already built.
+- Integration and e2e targets require the container image to be loaded locally (built via `nix build .#container-image` on any supported system, or pulled from GHCR).
 - bats-core and helper libraries are provided via a Nix devShell in `flake.nix`.
 - Tests are tagged (`unit`, `integration`, `e2e`) to support selective execution via `bats --filter-tags`.
 - CI runs all test tiers after the image build step in `pr-checks.yml`.
@@ -30,11 +30,11 @@ Sets up the foundational test infrastructure: Nix devShell with bats-core and he
 
 ### Makefile
 - [ ] `make test-unit` runs `bats --filter-tags unit tests/`.
-- [ ] `make test-integration` builds the container image (if not cached) then runs `bats --filter-tags integration tests/`.
-- [ ] `make test-e2e` builds the container image (if not cached) then runs `bats --filter-tags e2e tests/`.
+- [ ] `make test-integration` ensures the container image is loaded locally then runs `bats --filter-tags integration tests/`.
+- [ ] `make test-e2e` ensures the container image is loaded locally then runs `bats --filter-tags e2e tests/`.
 - [ ] `make test` runs all three tiers sequentially.
 - [ ] `make test-fast` is an alias for `test-unit`.
-- [ ] Image build detection uses the same Containerfile content-hash tag that the launcher uses, so a pre-built image is recognized.
+- [ ] Image availability is checked by verifying `agent-sandbox:<version>` exists in the local image store; the Makefile provides an `ensure-image` target that builds and loads the Nix-built image via `nix build .#container-image` (cross-platform, works on both Linux and darwin with a Linux builder configured).
 
 ### Launcher refactor
 - [ ] `agent-sandbox.sh` wraps its top-level execution in an `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi` guard.

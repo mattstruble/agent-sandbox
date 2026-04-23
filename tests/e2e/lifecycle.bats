@@ -23,14 +23,15 @@ setup() {
 	# Skip if no container runtime is available
 	RUNTIME=$(runtime_name) || skip "No container runtime found (install docker or podman)"
 
-	# Skip if sha256sum is not available: compute_containerfile_hash() in the
-	# launcher uses sha256sum directly without a shasum fallback. On macOS
-	# systems without sha256sum in PATH, _run_sandbox would fail at runtime.
-	command -v sha256sum &>/dev/null || skip "sha256sum not found — required by agent-sandbox.sh:compute_containerfile_hash"
+	# Set AGENT_SANDBOX_VERSION before sourcing the launcher so VERSION is
+	# consistent between the image existence check and _run_sandbox's IMAGE_TAG.
+	# The Makefile passes AGENT_SANDBOX_VERSION=$(VERSION) when invoking bats;
+	# fall back to 0.1.0 for direct bats invocations.
+	export AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-0.1.0}"
 
 	# Verify the image exists — skip rather than build (build is slow and
 	# belongs to CI setup, not individual test setup)
-	IMAGE=$(compute_image_tag) || skip "Cannot compute image tag"
+	IMAGE="agent-sandbox:${AGENT_SANDBOX_VERSION}"
 	if ! "$RUNTIME" images -q "$IMAGE" 2>/dev/null | grep -q .; then
 		skip "Image $IMAGE not found — run 'make ensure-image' first"
 	fi
@@ -51,7 +52,7 @@ GITCFG
 	# Source the launcher to get all its functions available in this shell.
 	# The entry-point guard (BASH_SOURCE[0] == $0) prevents main() from running.
 	export AGENT_SANDBOX_SHARE_DIR="${REPO_ROOT}"
-	export AGENT_SANDBOX_VERSION="0.1.0-test"
+	# AGENT_SANDBOX_VERSION is already set above — do not override here.
 	export HOME="${TEST_HOME}"
 	# Force the detected runtime for tests to avoid Podman macOS virtiofs SSH warnings
 	export AGENT_SANDBOX_RUNTIME="${RUNTIME}"
@@ -117,6 +118,27 @@ _precompute_container_name() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: _make_verify_agent
+# ---------------------------------------------------------------------------
+# Create a temporary agent script that runs the given commands and exits.
+# Prints the path to the created script.
+#
+# The commands string is written literally (no shell expansion) so that
+# variable references like ${AGENT:-unset} and $(pwd) are evaluated inside
+# the container at runtime, not in the test-runner shell at script-creation time.
+#
+# Usage: FAKE_AGENT="$(_make_verify_agent 'echo "AGENT_VALUE: ${AGENT:-unset}"')"
+_make_verify_agent() {
+	local commands="$1"
+	local agent_script
+	agent_script="$(make_temp)"
+	TEST_TMPFILES+=("$agent_script")
+	printf '#!/usr/bin/env bash\n%s\n' "$commands" > "$agent_script"
+	chmod +x "$agent_script"
+	echo "$agent_script"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: _run_sandbox
 # ---------------------------------------------------------------------------
 # Runs the container using launcher-computed flags, with the fake agent
@@ -154,26 +176,19 @@ _run_sandbox() {
 	log "  Agent:     $OPT_AGENT"
 	log "  Workspace: $WORKSPACE"
 
-	# Ensure image exists (already checked in setup, but guard here too.
-	# NOTE: compute_containerfile_hash() in agent-sandbox.sh uses sha256sum
-	# directly without a shasum fallback. On macOS systems where sha256sum is
-	# not in PATH, this will fail. This is a known limitation of the production
-	# code; the tests cannot fix it without modifying agent-sandbox.sh.
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+	# Use version-based image tag
+	IMAGE_TAG="agent-sandbox:${VERSION}"
 
 	# Assemble mounts and env vars using the real launcher functions
 	assemble_mount_flags
 	assemble_env_flags
 
 	# Inject the fake agent over the real agent binary.
-	# opencode lives at ~/.opencode/bin/opencode inside the container.
-	# claude lives at /usr/local/bin/claude (npm global install on Debian).
+	# Determine the agent binary path dynamically from the image.
 	local agent_bin
-	if [[ "$OPT_AGENT" == "opencode" ]]; then
-		agent_bin="/home/sandbox/.opencode/bin/opencode"
-	else
-		agent_bin="/usr/local/bin/claude"
+	agent_bin=$("$RUNTIME" run --rm --entrypoint which "$IMAGE_TAG" opencode 2>/dev/null || true)
+	if [[ -z "$agent_bin" || "$agent_bin" != /* ]]; then
+		skip "opencode binary path could not be determined in image $IMAGE_TAG"
 	fi
 	MOUNT_FLAGS+=("-v" "${FAKE_AGENT}:${agent_bin}:ro${MOUNT_Z}")
 
@@ -223,13 +238,8 @@ _run_sandbox() {
 	# Create a sentinel file in the workspace before launching
 	echo "host-created-content" >"${WORKSPACE_DIR}/host-file.txt"
 
-	# Use a custom fake agent that verifies the file exists at /workspace/
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 if [[ -f /workspace/host-file.txt ]]; then
     echo "WORKSPACE_FILE_VISIBLE: yes"
     cat /workspace/host-file.txt
@@ -237,13 +247,7 @@ else
     echo "WORKSPACE_FILE_VISIBLE: no"
     exit 1
 fi
-exit 0
-AGENT
-
-	# FAKE_AGENT is a global read by _run_sandbox; save/restore to scope the
-	# override to this test.
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -261,20 +265,11 @@ AGENT
 
 # bats test_tags=e2e
 @test "workspace mount: file written inside container appears on host filesystem" {
-	# Use a custom fake agent that writes a file to /workspace/
-	local write_agent
-	write_agent="$(make_temp)"
-	TEST_TMPFILES+=("$write_agent")
-	chmod 700 "$write_agent"
-	cat >"$write_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 echo "written-from-container" >/workspace/container-created-file.txt
 echo "CONTAINER_WRITE: done"
-exit 0
-AGENT
-
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$write_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -543,19 +538,9 @@ AGENT
 
 # bats test_tags=e2e
 @test "env passthrough: AGENT env var is set to 'opencode' inside the container" {
-	# Use a custom fake agent that prints the AGENT env var
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "AGENT_VALUE: ${AGENT:-unset}"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "AGENT_VALUE: ${AGENT:-unset}"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -567,94 +552,14 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 10: AGENT env var — claude agent sets AGENT=claude
-# ---------------------------------------------------------------------------
-
-# bats test_tags=e2e
-@test "env passthrough: AGENT env var is set to 'claude' when --agent claude is passed" {
-	# Use a custom fake agent that prints the AGENT env var
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "AGENT_VALUE: ${AGENT:-unset}"
-exit 0
-AGENT
-
-	# Pre-compute the container name for teardown cleanup before any work that
-	# could fail (mirrors the _precompute_container_name pattern used by other tests)
-	_precompute_container_name --no-ssh --agent claude "$WORKSPACE_DIR"
-
-	# Build the run command manually for the claude agent: _run_sandbox injects
-	# the fake agent at the opencode path by default; for claude we need the
-	# claude binary path (/usr/local/bin/claude via npm global install).
-	parse_args --no-ssh --agent claude "$WORKSPACE_DIR"
-	parse_config
-	apply_config_defaults
-	detect_runtime
-
-	USERNS_FLAG=""
-	[[ "$RUNTIME" == "podman" ]] && USERNS_FLAG="--userns=keep-id"
-	MOUNT_Z=""
-	[[ "$(uname -s)" == "Linux" ]] && MOUNT_Z=",z"
-
-	WORKSPACE=$(resolve_workspace "${OPT_WORKSPACE}")
-	CONTAINER_NAME=$(compute_container_name "$OPT_AGENT" "$WORKSPACE")
-
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
-
-	assemble_mount_flags
-	assemble_env_flags
-
-	# Inject fake agent at the claude binary path
-	MOUNT_FLAGS+=("-v" "${verify_agent}:/usr/local/bin/claude:ro${MOUNT_Z}")
-
-	local cmd=(
-		run --rm -i
-		--name "$CONTAINER_NAME"
-		--sysctl=net.ipv6.conf.all.disable_ipv6=1
-		--sysctl=net.ipv6.conf.default.disable_ipv6=1
-		--sysctl=net.ipv6.conf.lo.disable_ipv6=1
-		--cap-drop=ALL
-		--cap-add=NET_ADMIN
-		--cap-add=NET_RAW
-		--cap-add=SETUID
-		--cap-add=SETGID
-		--cap-add=SYS_TIME
-		--security-opt=no-new-privileges
-		"--memory=${CFG_MEMORY}"
-		"--cpus=${CFG_CPUS}"
-	)
-	[[ -n "$USERNS_FLAG" ]] && cmd+=("$USERNS_FLAG")
-	cmd+=("${MOUNT_FLAGS[@]}" "${ENV_FLAGS[@]}" "$IMAGE_TAG")
-
-	run "$RUNTIME" "${cmd[@]}"
-
-	assert_success
-	assert_output --partial "AGENT_VALUE: claude"
-}
-
-# ---------------------------------------------------------------------------
-# Test 11: --no-ssh flag — AGENT_SANDBOX_NO_SSH is set in container
+# Test 10: --no-ssh flag — AGENT_SANDBOX_NO_SSH is set in container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
 @test "no-ssh flag: AGENT_SANDBOX_NO_SSH env var is set inside container when --no-ssh is passed" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "NO_SSH_VALUE: ${AGENT_SANDBOX_NO_SSH:-unset}"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "NO_SSH_VALUE: ${AGENT_SANDBOX_NO_SSH:-unset}"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -666,17 +571,13 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 12: Gitconfig mount — host gitconfig is accessible in container
+# Test 11: Gitconfig mount — host gitconfig is accessible in container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
 @test "gitconfig mount: host .gitconfig is mounted read-only at /home/sandbox/.gitconfig" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
 if [[ -f /home/sandbox/.gitconfig ]]; then
     echo "GITCONFIG_VISIBLE: yes"
     grep -q "Test User" /home/sandbox/.gitconfig && echo "GITCONFIG_NAME: correct"
@@ -684,11 +585,7 @@ else
     echo "GITCONFIG_VISIBLE: no"
     exit 1
 fi
-exit 0
-AGENT
-
-	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
@@ -701,7 +598,7 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 13: Container removed after exit (--rm flag)
+# Test 12: Container removed after exit (--rm flag)
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
@@ -720,23 +617,14 @@ AGENT
 }
 
 # ---------------------------------------------------------------------------
-# Test 14: Workspace is the working directory inside the container
+# Test 13: Workspace is the working directory inside the container
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
 @test "workspace mount: /workspace is the working directory when the agent runs" {
-	local verify_agent
-	verify_agent="$(make_temp)"
-	TEST_TMPFILES+=("$verify_agent")
-	chmod 700 "$verify_agent"
-	cat >"$verify_agent" <<'AGENT'
-#!/usr/bin/env bash
-echo "PWD_VALUE: $(pwd)"
-exit 0
-AGENT
-
 	local orig_fake_agent="$FAKE_AGENT"
-	FAKE_AGENT="$verify_agent"
+	FAKE_AGENT="$(_make_verify_agent 'echo "PWD_VALUE: $(pwd)"
+exit 0')"
 
 	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
 	run _run_sandbox --no-ssh "$WORKSPACE_DIR"

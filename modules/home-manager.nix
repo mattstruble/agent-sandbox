@@ -4,8 +4,12 @@
   pkgs,
   ...
 }:
+# NOTE: The `actualPackage` wrapping pattern (symlinkJoin + wrapProgram with
+# AGENT_SANDBOX_IMAGE_PATH) is shared via modules/lib.nix.
+# If you change the wrapping logic, update modules/lib.nix (not this file).
 let
   cfg = config.programs.agent-sandbox;
+  moduleLib = import ./lib.nix { inherit lib pkgs; };
 
   # Build the TOML config structure from settings
   tomlFormat = pkgs.formats.toml { };
@@ -31,6 +35,8 @@ let
     };
   };
 
+  # IMPORTANT: Keep allDefaults in sync with the default values of each setting
+  # in the options block below. If a new setting is added, add its default here.
   # True when every setting is at its default; suppresses config file generation
   allDefaults =
     cfg.settings.defaultAgent == "opencode"
@@ -40,6 +46,13 @@ let
     && cfg.settings.mounts.extraPaths == [ ]
     && cfg.settings.resources.memory == "8g"
     && cfg.settings.resources.cpus == 4;
+
+  # When image is set, wrap the launcher with AGENT_SANDBOX_IMAGE_PATH so the
+  # launcher loads the local image instead of pulling from GHCR.
+  # See modules/lib.nix for the shared implementation.
+  actualPackage = moduleLib.mkActualPackage {
+    inherit (cfg) package image;
+  };
 in
 {
   options.programs.agent-sandbox = {
@@ -54,11 +67,17 @@ in
       description = "Container runtime package. Defaults to podman on Linux, null on darwin.";
     };
 
+    image = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      defaultText = lib.literalExpression "null";
+      description = "Container image package. When set, the launcher is wrapped with AGENT_SANDBOX_IMAGE_PATH pointing to the image store path.";
+    };
+
     settings = {
       defaultAgent = lib.mkOption {
         type = lib.types.enum [
           "opencode"
-          "claude"
         ];
         default = "opencode";
         description = "Default agent when --agent is not passed.";
@@ -103,7 +122,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ] ++ lib.optional (cfg.containerPackage != null) cfg.containerPackage;
+    home.packages = [
+      actualPackage
+    ]
+    ++ lib.optional (cfg.containerPackage != null) cfg.containerPackage;
 
     xdg.configFile."agent-sandbox/config.toml" = lib.mkIf (!allDefaults) {
       source = tomlFormat.generate "agent-sandbox-config" configContent;

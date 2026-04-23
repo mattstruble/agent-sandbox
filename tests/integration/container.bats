@@ -19,11 +19,12 @@
 setup() {
     load '../test_helper'
     RUNTIME=$(runtime_name) || skip "No container runtime found"
-    IMAGE=$(compute_image_tag) || skip "Could not compute image tag — Containerfile missing or no sha256 tool"
+    export AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-0.1.0}"
+    IMAGE="agent-sandbox:${AGENT_SANDBOX_VERSION}"
 
     # Verify the image exists; skip rather than fail if not built yet.
     if ! "$RUNTIME" images -q "$IMAGE" 2>/dev/null | grep -q .; then
-        skip "Image $IMAGE not found — run 'make ensure-image' first"
+        skip "Image $IMAGE not found — build via 'nix build .#container-image' and load, or run 'make ensure-image'"
     fi
 
     # Use BATS_TEST_TMPDIR for all temp files so bats auto-cleans on test exit,
@@ -47,21 +48,32 @@ teardown() {
     [[ -n "$_TEST_HOST_CONFIG_DIR" ]] && rm -rf "$_TEST_HOST_CONFIG_DIR" || true
 }
 
+# ---------------------------------------------------------------------------
+# Helper: _run_in_sandbox
+# ---------------------------------------------------------------------------
+# Run a command inside the container with production-equivalent security flags.
+# Usage: _run_in_sandbox "bash -c 'command'"
+# For tests that need additional flags (volumes, env vars), use the runtime directly.
+_run_in_sandbox() {
+    "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        --entrypoint bash "$IMAGE" \
+        -c "$1"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 1: Image Contents
 # ─────────────────────────────────────────────────────────────────────────────
 
 # bats test_tags=integration
 @test "image: opencode binary exists and is executable" {
-    # opencode is NOT on PATH — it lives at /home/sandbox/.opencode/bin/opencode.
-    # The entrypoint uses the full path; `which opencode` would fail.
-    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -x /home/sandbox/.opencode/bin/opencode
-    assert_success
-}
-
-# bats test_tags=integration
-@test "image: claude binary exists and is executable" {
-    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" claude
+    # In the Nix image, opencode is on PATH (installed to the Nix store).
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode
     assert_success
 }
 
@@ -93,6 +105,212 @@ teardown() {
 @test "image: git binary exists and is executable" {
     run "$RUNTIME" run --rm --entrypoint which "$IMAGE" git
     assert_success
+}
+
+# bats test_tags=integration
+@test "image: su-exec binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" su-exec
+    assert_success
+}
+
+# bats test_tags=integration
+@test "image: nix binary exists and is executable" {
+    # Nix is installed via ENV PATH directive, so `which` should find it.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint which "$IMAGE" nix
+    assert_success
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 1b: Nix Runtime Package Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+# bats test_tags=integration
+@test "nix: nix --version succeeds as sandbox user" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint nix "$IMAGE" --version
+    assert_success
+    assert_output --partial "nix"
+}
+
+# bats test_tags=integration
+@test "nix: nix run nixpkgs#hello succeeds" {
+    # Validates the full download-from-binary-cache → execute path.
+    # Requires network access to cache.nixos.org.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix run nixpkgs#hello'
+    assert_success
+    assert_output --partial "Hello, world!"
+}
+
+# bats test_tags=integration
+@test "nix: /etc/nix/nix.conf is root-owned and read-only" {
+    run "$RUNTIME" run --rm --entrypoint stat "$IMAGE" -c '%U %a' /etc/nix/nix.conf
+    assert_success
+    assert_output "root 444"
+}
+
+# bats test_tags=integration
+@test "nix: /etc/nix/registry.json is root-owned and read-only" {
+    run "$RUNTIME" run --rm --entrypoint stat "$IMAGE" -c '%U %a' /etc/nix/registry.json
+    assert_success
+    assert_output "root 444"
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot write to /etc/nix/nix.conf" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'echo test >> /etc/nix/nix.conf'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot write to /etc/nix/registry.json" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'echo test >> /etc/nix/registry.json'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: sandbox user cannot create files in /etc/nix/" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'touch /etc/nix/evil.conf'
+    assert_failure
+}
+
+# bats test_tags=integration
+@test "nix: substituters is cache.nixos.org only" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix show-config 2>/dev/null | grep "^substituters ="'
+    assert_success
+    # Nix normalizes URLs with trailing slash; match either form
+    assert_output --regexp "^substituters = https://cache\.nixos\.org/?$"
+}
+
+# bats test_tags=integration
+@test "nix: registry contains pinned nixpkgs" {
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -c 'nix registry list 2>/dev/null'
+    assert_success
+    assert_output --partial "flake:nixpkgs"
+    assert_output --partial "github:NixOS/nixpkgs/"
+}
+
+# bats test_tags=integration
+@test "nix: command_not_found_handle suggests nix run" {
+    # Run a nonexistent command in an interactive bash shell to trigger the handler.
+    # The handler is defined in .bashrc, which bash only sources for interactive shells.
+    run "$RUNTIME" run --rm --user sandbox --entrypoint bash "$IMAGE" \
+        -ic 'nonexistent_tool_xyz 2>&1; true'
+    assert_output --partial "nix run nixpkgs#nonexistent_tool_xyz"
+}
+
+# bats test_tags=integration
+@test "nix: entrypoint appends Nix instructions to AGENTS.md" {
+    # Run the entrypoint with a fake agent that checks AGENTS.md content.
+    _TEST_WORKSPACE="$(make_tempdir)"
+    _TEST_AGENT="$(make_temp)"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'grep -q "Runtime Package Management" ~/.config/opencode/AGENTS.md' \
+        > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
+        "$IMAGE"
+    assert_success
+}
+
+# bats test_tags=integration
+@test "nix: Nix instructions are separated from existing AGENTS.md content by a newline" {
+    # Pre-populate AGENTS.md with content that does NOT end with a newline.
+    # The entrypoint must insert a newline separator before appending, so the
+    # Nix instructions start on their own line and are not concatenated onto
+    # the last line of the existing content.
+    _TEST_WORKSPACE="$(make_tempdir)"
+    _TEST_HOST_CONFIG_DIR="$(make_tempdir)"
+
+    # Write AGENTS.md without a trailing newline (simulates a common real-world case)
+    printf 'existing content without trailing newline' \
+        > "${_TEST_HOST_CONFIG_DIR}/AGENTS.md"
+
+    _TEST_AGENT="$(make_temp)"
+    # The fake agent prints AGENTS.md content so we can inspect it
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'cat ~/.config/opencode/AGENTS.md' \
+        'exit 0' \
+        > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
+        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
+        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        "$IMAGE"
+    assert_success
+    # The existing content and the Nix instructions must be on separate lines.
+    # If the newline separator is missing, "existing content without trailing newline"
+    # and "# Runtime Package Management" would be concatenated on the same line.
+    assert_output --regexp $'existing content without trailing newline\n'
+    assert_output --partial "# Runtime Package Management"
+}
+
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/nix-instructions.md exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/nix-instructions.md
+    assert_success
+}
+
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/opencode-permissions.json exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-permissions.json
+    assert_success
+}
+
+# bats test_tags=integration
+@test "static files: /etc/agent-sandbox/opencode-permissions.json is valid JSON" {
+    # Validates that the permissions file embedded in the image is well-formed JSON.
+    # jq exits non-zero and prints an error if the input is not valid JSON.
+    run "$RUNTIME" run --rm --entrypoint bash "$IMAGE" \
+        -c 'jq . < /etc/agent-sandbox/opencode-permissions.json'
+    assert_success
+    # Verify the expected structure is present (not just syntactically valid)
+    assert_output --partial '"permission"'
+    assert_output --partial '"bash"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,100 +348,82 @@ teardown() {
 
 # bats test_tags=integration
 @test "firewall: IPv6 is disabled" {
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c 'cat /proc/sys/net/ipv6/conf/all/disable_ipv6'
+    run _run_in_sandbox 'cat /proc/sys/net/ipv6/conf/all/disable_ipv6'
     assert_success
     assert_output "1"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: outbound TCP 443 (HTTPS) is allowed" {
     # Requires internet access: init-firewall.sh itself verifies HTTPS reachability
     # as part of its post-setup check, and this test also probes it directly.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/443" 2>/dev/null && echo "HTTPS_OK"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/443" 2>/dev/null && echo "HTTPS_OK"'
     assert_success
     assert_output --partial "HTTPS_OK"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: outbound TCP 80 (HTTP) is allowed" {
     # Requires internet access: see note on TCP 443 test above.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/80" 2>/dev/null && echo "HTTP_OK"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && timeout 5 bash -c "echo >/dev/tcp/93.184.216.34/80" 2>/dev/null && echo "HTTP_OK"'
     assert_success
     assert_output --partial "HTTP_OK"
 }
 
 # bats test_tags=integration
-@test "firewall: outbound TCP 8080 is blocked" {
-    # Verifies the iptables REJECT rule for non-allowed ports is in place.
-    # Uses iptables rule inspection rather than live connectivity to avoid
-    # false positives from network unreachability masking a missing firewall rule.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
-            iptables -L OUTPUT -n | grep -q "REJECT" && echo "REJECT_RULE_PRESENT" || echo "REJECT_RULE_MISSING"'
+@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 8080)" {
+    # The firewall design uses a catch-all REJECT at the end of the OUTPUT chain
+    # (after ACCEPT rules for allowed ports: 80, 443, 22, DNS, NTP).
+    # This test verifies two things:
+    #   1. The catch-all REJECT rule exists as the final rule in OUTPUT (no dport).
+    #   2. Port 8080 has no ACCEPT rule — it falls through to the catch-all.
+    # This is more specific than checking for any REJECT rule, which would pass
+    # even if only an unrelated port had a REJECT rule.
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
+            # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
+            if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
+                echo "CATCHALL_REJECT_PRESENT"
+            else
+                echo "CATCHALL_REJECT_MISSING"
+            fi
+            # Verify port 8080 is NOT in any ACCEPT rule
+            if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:8080"; then
+                echo "PORT_8080_ACCEPTED"
+            else
+                echo "PORT_8080_NOT_ACCEPTED"
+            fi'
     assert_success
-    assert_output --partial "REJECT_RULE_PRESENT"
+    assert_output --partial "CATCHALL_REJECT_PRESENT"
+    assert_output --partial "PORT_8080_NOT_ACCEPTED"
 }
 
 # bats test_tags=integration
-@test "firewall: outbound TCP 3000 is blocked" {
-    # Same approach as TCP 8080: verify the catch-all REJECT rule is present.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
-            iptables -L OUTPUT -n | grep -q "REJECT" && echo "REJECT_RULE_PRESENT" || echo "REJECT_RULE_MISSING"'
+@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 3000)" {
+    # Same verification as port 8080: the catch-all REJECT blocks port 3000 because
+    # there is no ACCEPT rule for it. Tests both the presence of the catch-all and
+    # the absence of a port-3000 ACCEPT rule.
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
+            # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
+            if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
+                echo "CATCHALL_REJECT_PRESENT"
+            else
+                echo "CATCHALL_REJECT_MISSING"
+            fi
+            # Verify port 3000 is NOT in any ACCEPT rule
+            if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:3000"; then
+                echo "PORT_3000_ACCEPTED"
+            else
+                echo "PORT_3000_NOT_ACCEPTED"
+            fi'
     assert_success
-    assert_output --partial "REJECT_RULE_PRESENT"
+    assert_output --partial "CATCHALL_REJECT_PRESENT"
+    assert_output --partial "PORT_3000_NOT_ACCEPTED"
 }
 
-# bats test_tags=integration
+# bats test_tags=integration,network
 @test "firewall: DNS resolution works through pinned resolver" {
     # Requires internet access: getent hosts makes a live DNS query.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && getent hosts example.com'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && getent hosts example.com'
     assert_success
     # Verify the output contains an IP address, not just any non-empty string.
     assert_output --regexp '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
@@ -234,15 +434,7 @@ teardown() {
     # UDP is connectionless so we verify the iptables ACCEPT rule is present
     # rather than attempting a live NTP exchange. Uses word-boundary grep to
     # avoid matching 162.159.200.123 when checking for 162.159.200.1.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.1"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.1"'
     assert_success
 }
 
@@ -250,15 +442,7 @@ teardown() {
 @test "firewall: NTP iptables rule allows UDP 123 to Cloudflare 162.159.200.123" {
     # UDP is connectionless so we verify the iptables ACCEPT rule is present
     # rather than attempting a live NTP exchange.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.123"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep -w "162.159.200.123"'
     assert_success
 }
 
@@ -266,15 +450,7 @@ teardown() {
 @test "firewall: NTP iptables rule rejects UDP 123 to non-pinned IPs" {
     # Verify the catch-all REJECT rule for UDP 123 (after the Cloudflare ACCEPT rules)
     # is present. This ensures non-Cloudflare NTP is blocked.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        --entrypoint bash "$IMAGE" \
-        -c '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep "REJECT"'
+    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 && iptables -L OUTPUT -n | grep "udp dpt:123" | grep "REJECT"'
     assert_success
 }
 
@@ -283,9 +459,9 @@ teardown() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # bats test_tags=integration
-@test "entrypoint: drops to sandbox user before executing agent" {
+@test "entrypoint: drops to sandbox user before executing agent (su-exec)" {
     # Mount the fake agent over the real opencode binary.
-    # The entrypoint starts as root, sets up the firewall, then re-execs as sandbox.
+    # The entrypoint starts as root, sets up the firewall, then re-execs as sandbox via su-exec.
     # We verify the user drop by having the fake agent print its effective username.
     _TEST_WORKSPACE=$(make_tempdir)
     _TEST_AGENT=$(make_temp)
@@ -296,6 +472,13 @@ teardown() {
         'echo "RUNNING_AS_USER=$(id -un)"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
 
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
@@ -308,7 +491,7 @@ teardown() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
@@ -366,45 +549,11 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
-        "$IMAGE"
-    assert_success
-    assert_output --partial '"bash": "allow"'
-    assert_output --partial '"edit": "allow"'
-    assert_output --partial '"webfetch": "allow"'
-}
-
-# bats test_tags=integration
-@test "entrypoint: claude agent path executes claude binary" {
-    # For the claude agent, the entrypoint runs `exec claude --dangerously-skip-permissions`.
-    # We verify the entrypoint reaches that point by mounting a fake claude over the real one.
-    _TEST_WORKSPACE=$(make_tempdir)
-    _TEST_AGENT=$(make_temp)
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'echo "FAKE_CLAUDE_MARKER: agent-sandbox-test-sentinel"' \
-        'exit 0' > "$_TEST_AGENT"
-    chmod +x "$_TEST_AGENT"
-
-    # Determine where claude is installed inside the image (globally via npm, on PATH).
-    local claude_path
-    claude_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" claude 2>/dev/null || true)
-
-    # Validate the path is absolute before using it in a volume mount.
-    if [[ -z "$claude_path" || "$claude_path" != /* ]]; then
-        skip "claude binary path could not be determined or is not absolute: '${claude_path}'"
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
     fi
 
     run "$RUNTIME" run --rm \
@@ -417,12 +566,14 @@ teardown() {
         --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
-        -e AGENT=claude \
-        -v "${_TEST_AGENT}:${claude_path}:ro" \
+        -e AGENT=opencode \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
-    assert_output --partial "FAKE_CLAUDE_MARKER"
+    assert_output --partial '"bash": "allow"'
+    assert_output --partial '"edit": "allow"'
+    assert_output --partial '"webfetch": "allow"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -472,6 +623,13 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -484,7 +642,7 @@ teardown() {
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
         -e TEST_INTEGRATION_VAR=hello-from-host \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"
     assert_success
@@ -507,6 +665,13 @@ teardown() {
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
 
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
     run "$RUNTIME" run --rm \
         --cap-add=NET_ADMIN \
         --cap-add=NET_RAW \
@@ -518,7 +683,7 @@ teardown() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_AGENT}:/home/sandbox/.opencode/bin/opencode:ro" \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
         -v "${_TEST_WORKSPACE}:/workspace" \
         "$IMAGE"

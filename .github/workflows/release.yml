@@ -8,8 +8,33 @@ permissions:
   contents: read
 
 jobs:
+  parse-tag:
+    name: Parse & Validate Semver Tag
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.parse.outputs.semver }}
+    steps:
+      - name: Parse and validate semver tag
+        id: parse
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Strip leading 'v' if present
+          SEMVER="${TAG#v}"
+          if [ -z "$SEMVER" ]; then
+            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
+            exit 1
+          fi
+          # Validate semver format to prevent injection via malicious tag names
+          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
+            exit 1
+          fi
+          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+
   retag-and-push:
     name: Retag & Push Release Image
+    needs: parse-tag
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -22,62 +47,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive semver from release tag
-        id: parse-tag
+      - name: Wait for SHA-tagged manifest and arch tags to be available
         env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          # Strip leading 'v' if present
-          SEMVER="${TAG#v}"
-          if [ -z "$SEMVER" ]; then
-            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
-            exit 1
-          fi
-          # Validate semver format to prevent injection via malicious tag names
-          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
-            exit 1
-          fi
-          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SHA-tagged image to be available
-        env:
-          IMAGE: ghcr.io/mstruble/agent-sandbox:${{ github.sha }}
+          SHA: ${{ github.sha }}
         run: |
           # publish-image.yml may still be running when this workflow fires.
           # Retry for up to 30 minutes (30 attempts × 60s).
-          for i in $(seq 1 30); do
-            if docker pull "${IMAGE}"; then
-              echo "Image available after attempt ${i}"
+          BASE="ghcr.io/mstruble/agent-sandbox"
+          for i in $(seq 1 60); do
+            if docker manifest inspect "${BASE}:${SHA}" > /dev/null 2>&1 && \
+               docker manifest inspect "${BASE}:${SHA}-amd64" > /dev/null 2>&1; then
+              echo "Manifest and arch tags available after attempt ${i}"
               exit 0
             fi
-            echo "Attempt ${i}/30: image not yet available, retrying in 60s..."
+            echo "Attempt ${i}/60: not yet available, retrying in 60s..."
             sleep 60
           done
-          echo "ERROR: image ${IMAGE} not available after 30 minutes" >&2
+          echo "ERROR: manifest ${BASE}:${SHA} (or arch tags) not available after 60 minutes" >&2
           exit 1
 
       - name: Retag as semver
         env:
-          SEMVER: ${{ steps.parse-tag.outputs.semver }}
+          SEMVER: ${{ needs.parse-tag.outputs.semver }}
           SHA: ${{ github.sha }}
-        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:${SEMVER}
+        run: |
+          docker manifest create \
+            ghcr.io/mstruble/agent-sandbox:${SEMVER} \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-amd64
+          docker manifest push ghcr.io/mstruble/agent-sandbox:${SEMVER}
 
       - name: Retag as latest
         env:
           SHA: ${{ github.sha }}
-        run: docker tag ghcr.io/mstruble/agent-sandbox:${SHA} ghcr.io/mstruble/agent-sandbox:latest
-
-      - name: Push semver tag
-        env:
-          SEMVER: ${{ steps.parse-tag.outputs.semver }}
-        run: docker push ghcr.io/mstruble/agent-sandbox:${SEMVER}
-
-      - name: Push latest tag
-        run: docker push ghcr.io/mstruble/agent-sandbox:latest
+        run: |
+          docker manifest create \
+            ghcr.io/mstruble/agent-sandbox:latest \
+            --amend ghcr.io/mstruble/agent-sandbox:${SHA}-amd64
+          docker manifest push ghcr.io/mstruble/agent-sandbox:latest
 
   publish-tarball:
     name: Publish Release Tarball
+    needs: parse-tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -88,28 +98,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Derive semver from release tag
-        id: parse-tag
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          # Strip leading 'v' if present
-          SEMVER="${TAG#v}"
-          if [ -z "$SEMVER" ]; then
-            echo "ERROR: empty semver derived from tag '${TAG}'" >&2
-            exit 1
-          fi
-          # Validate semver format to prevent injection via malicious tag names
-          if ! echo "$SEMVER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "ERROR: '${SEMVER}' is not a valid semver (expected X.Y.Z)" >&2
-            exit 1
-          fi
-          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
-
       - name: Build tarball
         env:
-          VERSION: ${{ steps.parse-tag.outputs.semver }}
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: |
+          if [ -z "${VERSION}" ]; then echo "ERROR: VERSION is empty (parse-tag output missing)" >&2; exit 1; fi
           STAGING="agent-sandbox-${VERSION}"
 
           mkdir -p "${STAGING}/bin" "${STAGING}/share/agent-sandbox"
@@ -124,14 +117,24 @@ jobs:
           [[ -s "${STAGING}/bin/agent-sandbox" ]] \
             || { echo "ERROR: agent-sandbox binary is empty after substitution" >&2; exit 1; }
 
-          cp Containerfile entrypoint.sh init-firewall.sh \
+          cp entrypoint.sh init-firewall.sh \
             "${STAGING}/share/agent-sandbox/"
 
           chmod +x "${STAGING}/bin/agent-sandbox"
 
           tar czf "${STAGING}.tar.gz" "${STAGING}/"
 
+      - name: Generate SHA256SUMS
+        env:
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
+        run: |
+          sha256sum "agent-sandbox-${VERSION}.tar.gz" install.sh > SHA256SUMS \
+            || { echo "ERROR: sha256sum failed" >&2; rm -f SHA256SUMS; exit 1; }
+
       - name: Upload tarball to release
         env:
-          VERSION: ${{ steps.parse-tag.outputs.semver }}
+          VERSION: ${{ needs.parse-tag.outputs.semver }}
         run: gh release upload "${GITHUB_REF_NAME}" "agent-sandbox-${VERSION}.tar.gz" --clobber
+
+      - name: Upload SHA256SUMS to release
+        run: gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber

@@ -1,33 +1,14 @@
-.PHONY: test test-unit test-integration test-e2e test-fast ensure-image _check-runtime _check-bats-lib
+.PHONY: test test-unit test-integration test-e2e test-fast ensure-image clean _check-runtime _check-bats-lib
 
 # Auto-detect container runtime: prefer podman, fall back to docker.
 RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
-# Portable sha256: GNU coreutils provides sha256sum; macOS ships shasum.
-SHA256 := $(shell command -v sha256sum 2>/dev/null || command -v shasum 2>/dev/null)
+# Version is derived from flake.nix at runtime so it stays in sync automatically.
+# Extracts the first 'version = "..."' from flake.nix (the top-level flake version
+# inside the perSystem block). The -m1 flag ensures we stop at the first match.
+VERSION ?= $(shell grep -m1 'version = ' flake.nix | grep -o '"[^"]*"' | tr -d '"')
 
-# Compute image tag matching the launcher's logic:
-#   sha256sum Containerfile | cut -c1-64
-# Evaluated at parse time; IMAGE_TAG will be empty if Containerfile is missing
-# or no sha256 tool is found — _check-runtime and ensure-image guard against this.
-ifeq ($(SHA256),)
-  $(error Neither sha256sum nor shasum found in PATH — cannot compute image tag)
-endif
-
-# Determine the correct invocation: sha256sum needs no flags; shasum needs -a 256.
-# Use notdir to inspect the binary name — avoids a second $(shell ...) call.
-ifeq ($(notdir $(SHA256)),shasum)
-  SHA256_CMD := $(SHA256) -a 256
-else
-  SHA256_CMD := $(SHA256)
-endif
-
-IMAGE_TAG := agent-sandbox:$(shell $(SHA256_CMD) Containerfile 2>/dev/null | cut -c1-64)
-
-# Validate IMAGE_TAG is non-empty (guards against missing Containerfile)
-ifeq ($(IMAGE_TAG),agent-sandbox:)
-  $(error IMAGE_TAG is empty: Containerfile not found or sha256 computation failed)
-endif
+IMAGE_TAG := agent-sandbox:$(VERSION)
 
 # Guard: fail fast with a clear message if BATS_LIB_PATH is not set.
 # Run 'nix develop' first, or set BATS_LIB_PATH manually.
@@ -38,13 +19,13 @@ _check-bats-lib:
 	fi
 
 test-unit: _check-bats-lib
-	bats --filter-tags unit -r tests/
+	AGENT_SANDBOX_VERSION=$(VERSION) bats --filter-tags unit -r tests/
 
 test-integration: ensure-image _check-bats-lib
-	bats --filter-tags integration -r tests/
+	AGENT_SANDBOX_VERSION=$(VERSION) bats --filter-tags integration -r tests/
 
 test-e2e: ensure-image _check-bats-lib
-	bats --filter-tags e2e -r tests/
+	AGENT_SANDBOX_VERSION=$(VERSION) bats --filter-tags e2e -r tests/
 
 test: test-unit test-integration test-e2e
 
@@ -57,11 +38,28 @@ _check-runtime:
 		exit 1; \
 	fi
 
-# Build the container image if not already cached.
+# Build and load the container image from Nix if not already cached.
 ensure-image: _check-runtime
 	@if ! "$(RUNTIME)" images -q "$(IMAGE_TAG)" 2>/dev/null | grep -q .; then \
-		echo "[test] Building image $(IMAGE_TAG)..."; \
-		"$(RUNTIME)" build -t "$(IMAGE_TAG)" -f Containerfile .; \
+		echo "[test] Building image $(IMAGE_TAG) via nix..."; \
+		_tmpdir=$$(mktemp -d) && \
+		nix build .#container-image --out-link "$$_tmpdir/result" && \
+		"$(RUNTIME)" load < "$$_tmpdir/result"; \
+		_rc=$$?; rm -rf "$$_tmpdir"; \
+		[ $$_rc -eq 0 ] && echo "[test] Image $(IMAGE_TAG) loaded." || exit $$_rc; \
 	else \
 		echo "[test] Image $(IMAGE_TAG) already exists, skipping build."; \
 	fi
+
+# Remove all agent-sandbox containers (running + stopped) and images (all tags).
+# Use this for a clean slate before rebuilding; distinct from the launcher's
+# --stop (workspace-scoped) and --prune (keeps current version).
+clean: _check-runtime
+	@echo "[clean] Stopping and removing all agent-sandbox containers..."
+	@"$(RUNTIME)" ps -a --filter "name=agent-sandbox-" --format "{{.Names}}" 2>/dev/null | \
+		while IFS= read -r name; do [ -n "$$name" ] && "$(RUNTIME)" rm -f "$$name" 2>/dev/null; done; true
+	@echo "[clean] Removing all agent-sandbox images..."
+	@"$(RUNTIME)" images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | \
+		grep -E "^(localhost/)?agent-sandbox:" | \
+		while IFS= read -r img; do [ -n "$$img" ] && "$(RUNTIME)" rmi -f "$$img" 2>/dev/null; done; true
+	@echo "[clean] Done."

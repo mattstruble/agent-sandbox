@@ -16,7 +16,6 @@ Extends the `release.yml` workflow to produce a platform-independent tarball as 
   ```
   agent-sandbox-${VERSION}/
     bin/agent-sandbox
-    share/agent-sandbox/Containerfile
     share/agent-sandbox/entrypoint.sh
     share/agent-sandbox/init-firewall.sh
   ```
@@ -24,6 +23,7 @@ Extends the `release.yml` workflow to produce a platform-independent tarball as 
 - [ ] `@SHARE_DIR@` in the launcher is substituted with `~/.local/share/agent-sandbox` (the literal string with tilde, not expanded).
 - [ ] `bin/agent-sandbox` has executable permissions in the tarball.
 - [ ] Support files are identical to the source files at the release tag (no modification).
+- [ ] The tarball does not contain a Containerfile (images are pulled from GHCR, not built locally).
 
 ### Workflow integration
 - [ ] The tarball is built as a new job in `release.yml`, triggered alongside the existing image re-tagging job.

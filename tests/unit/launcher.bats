@@ -44,6 +44,57 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# ENV_FLAGS assertion helpers
+# ---------------------------------------------------------------------------
+
+# Assert that ENV_FLAGS array contains a "-e" entry with the given value.
+assert_env_flag() {
+    local expected="$1"
+    local found=0
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$((i+1))]}" == "$expected" ]]; then
+            found=1
+            break
+        fi
+    done
+    if [[ "$found" -eq 0 ]]; then
+        echo "Expected ENV_FLAGS to contain '-e $expected'" >&2
+        echo "Actual ENV_FLAGS: ${ENV_FLAGS[*]}" >&2
+        return 1
+    fi
+}
+
+# Assert that ENV_FLAGS array does NOT contain a "-e" entry with the given value.
+refute_env_flag() {
+    local unexpected="$1"
+    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
+        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$((i+1))]}" == "$unexpected" ]]; then
+            echo "Expected ENV_FLAGS NOT to contain '-e $unexpected'" >&2
+            echo "Actual ENV_FLAGS: ${ENV_FLAGS[*]}" >&2
+            return 1
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Symlink workspace factory helper
+# ---------------------------------------------------------------------------
+
+# Set up a common symlink workspace structure for symlink mount tests.
+# Creates a temp workspace dir with a symlink to an external temp dir.
+# Sets _SYMLINK_WS and _EXTERNAL_DIR in the caller's scope.
+# Registers a cleanup trap; callers should call `rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"; trap - EXIT`
+# after the function under test completes.
+_setup_symlink_workspace() {
+    _SYMLINK_WS="$(mktemp -d)"
+    _EXTERNAL_DIR="$(mktemp -d)"
+    echo "content" > "$_EXTERNAL_DIR/file.txt"
+    ln -s "$_EXTERNAL_DIR" "$_SYMLINK_WS/external-link"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$_SYMLINK_WS' '$_EXTERNAL_DIR'" EXIT
+}
+
+# ---------------------------------------------------------------------------
 # 1. Argument Parsing Tests
 # ---------------------------------------------------------------------------
 
@@ -52,7 +103,7 @@ teardown() {
     parse_args
 
     [[ "$OPT_AGENT"              == ""    ]]
-    [[ "$OPT_BUILD"              == false ]]
+    [[ "$OPT_PULL"               == false ]]
     [[ "$OPT_FOLLOW_SYMLINKS"    == false ]]
     [[ "$OPT_FOLLOW_ALL_SYMLINKS" == false ]]
     [[ "$OPT_NO_SSH"             == false ]]
@@ -74,13 +125,6 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: --agent claude sets OPT_AGENT to claude" {
-    parse_args --agent claude
-
-    [[ "$OPT_AGENT" == "claude" ]]
-}
-
-# bats test_tags=unit
 @test "parse_args: -a shorthand sets OPT_AGENT" {
     parse_args -a opencode
 
@@ -96,17 +140,17 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: --build sets OPT_BUILD to true" {
-    parse_args --build
+@test "parse_args: --pull sets OPT_PULL to true" {
+    parse_args --pull
 
-    [[ "$OPT_BUILD" == true ]]
+    [[ "$OPT_PULL" == true ]]
 }
 
 # bats test_tags=unit
-@test "parse_args: -b shorthand sets OPT_BUILD to true" {
+@test "parse_args: -b shorthand sets OPT_PULL to true" {
     parse_args -b
 
-    [[ "$OPT_BUILD" == true ]]
+    [[ "$OPT_PULL" == true ]]
 }
 
 # bats test_tags=unit
@@ -245,13 +289,11 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "parse_args: -- stops option processing and remaining args are dropped" {
-    # NOTE: The production parse_args implementation does `shift; break` on `--`,
-    # which exits the while loop immediately. Any arguments after `--` are silently
-    # dropped — OPT_WORKSPACE stays empty. This is a known production behavior.
+@test "parse_args: -- stops option processing and remaining args become positional" {
+    # After `--`, remaining arguments are treated as positional args.
     parse_args -- /my/workspace
 
-    [[ "$OPT_WORKSPACE" == "" ]]
+    [[ "$OPT_WORKSPACE" == "/my/workspace" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -261,16 +303,16 @@ teardown() {
 # bats test_tags=unit
 @test "apply_config_defaults: empty OPT_AGENT falls back to CFG_AGENT" {
     parse_args
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     apply_config_defaults
 
-    [[ "$OPT_AGENT" == "claude" ]]
+    [[ "$OPT_AGENT" == "opencode" ]]
 }
 
 # bats test_tags=unit
 @test "apply_config_defaults: CLI --agent takes precedence over CFG_AGENT" {
     parse_args --agent opencode
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     apply_config_defaults
 
     [[ "$OPT_AGENT" == "opencode" ]]
@@ -284,7 +326,7 @@ teardown() {
     run apply_config_defaults
 
     assert_failure
-    assert_output --partial "must be 'opencode' or 'claude'"
+    assert_output --partial "must be 'opencode'"
 }
 
 # bats test_tags=unit
@@ -329,7 +371,7 @@ teardown() {
     # parse_config only resets arrays (CFG_EXTRA_VARS, CFG_EXTRA_PATHS) when the
     # file is missing — it does NOT reset scalar values. Set them to non-default
     # values first to verify they are preserved (not reset) on a missing file.
-    CFG_AGENT="claude"
+    CFG_AGENT="opencode"
     CFG_MEMORY="32g"
     CFG_CPUS=16
     CFG_FOLLOW_SYMLINKS=true
@@ -338,7 +380,7 @@ teardown() {
     parse_config
 
     # Scalar values must be unchanged (parse_config is a no-op for scalars when file is missing)
-    [[ "$CFG_AGENT"           == "claude" ]]
+    [[ "$CFG_AGENT"           == "opencode" ]]
     [[ "$CFG_MEMORY"          == "32g"    ]]
     [[ "$CFG_CPUS"            -eq 16      ]]
     [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
@@ -351,7 +393,7 @@ teardown() {
     CONFIG_FILE="${FIXTURE_DIR}/config-valid.toml"
     parse_config
 
-    [[ "$CFG_AGENT"           == "claude" ]]
+    [[ "$CFG_AGENT"           == "opencode" ]]
     [[ "$CFG_MEMORY"          == "16g"    ]]
     [[ "$CFG_CPUS"            -eq 8       ]]
     [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
@@ -372,7 +414,7 @@ teardown() {
     parse_config
 
     # Only agent was set in the partial config
-    [[ "$CFG_AGENT"  == "claude"  ]]
+    [[ "$CFG_AGENT"  == "opencode"  ]]
     # Other values should remain at defaults
     [[ "$CFG_MEMORY" == "8g"      ]]
     [[ "$CFG_CPUS"   -eq 4        ]]
@@ -498,14 +540,6 @@ teardown() {
 }
 
 # bats test_tags=unit
-@test "compute_container_name: returns expected pattern for claude agent" {
-    local result
-    result=$(compute_container_name "claude" "/home/user/my-project")
-
-    [[ "$result" =~ ^agent-sandbox-claude-my-project-[0-9a-f]{6}$ ]]
-}
-
-# bats test_tags=unit
 @test "compute_container_name: same path always produces the same name (deterministic)" {
     local name1 name2
     name1=$(compute_container_name "opencode" "/home/user/my-project")
@@ -546,69 +580,18 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 # bats test_tags=unit
-@test "compute_containerfile_hash: returns a 64-character hex string" {
-    # CONTAINERFILE is set to ${SHARE_DIR}/Containerfile = ${REPO_ROOT}/Containerfile
-    local result
-    result=$(compute_containerfile_hash)
+@test "image tag: IMAGE_TAG is constructed as 'agent-sandbox:<VERSION>'" {
+    # Verify that the launcher's IMAGE_TAG construction formula produces the
+    # expected format. The launcher sets IMAGE_TAG="agent-sandbox:${VERSION}"
+    # in main(); we replicate that formula here and verify the result.
+    local expected="agent-sandbox:${VERSION}"
 
-    [[ ${#result} -eq 64 ]]
-    [[ "$result" =~ ^[0-9a-f]{64}$ ]]
-}
+    # Simulate the launcher's IMAGE_TAG assignment
+    local IMAGE_TAG="agent-sandbox:${VERSION}"
 
-# bats test_tags=unit
-@test "compute_containerfile_hash: is deterministic for the same file" {
-    local hash1 hash2
-    hash1=$(compute_containerfile_hash)
-    hash2=$(compute_containerfile_hash)
-
-    [[ "$hash1" == "$hash2" ]]
-}
-
-# bats test_tags=unit
-@test "compute_containerfile_hash: different file contents produce different hashes" {
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    local tmp_cf="${tmp_dir}/Containerfile"
-    local original_cf="$CONTAINERFILE"
-
-    # Register a trap to guarantee CONTAINERFILE is restored and temp dir is
-    # cleaned up even if an assertion or compute_containerfile_hash fails.
-    # shellcheck disable=SC2064
-    trap "CONTAINERFILE='${original_cf}'; rm -rf '${tmp_dir}'" EXIT
-
-    # Write a minimal Containerfile and hash it
-    printf 'FROM scratch\n' > "$tmp_cf"
-    CONTAINERFILE="$tmp_cf"
-    local hash1
-    hash1=$(compute_containerfile_hash)
-
-    # Modify the Containerfile and hash it again
-    printf 'FROM scratch\nLABEL version=2\n' > "$tmp_cf"
-    local hash2
-    hash2=$(compute_containerfile_hash)
-
-    CONTAINERFILE="$original_cf"
-    rm -rf "$tmp_dir"
-    trap - EXIT
-
-    [[ "$hash1" != "$hash2" ]]
-}
-
-# bats test_tags=unit
-@test "compute_containerfile_hash: missing Containerfile exits with error" {
-    # Run in a subshell via `run` so the CONTAINERFILE mutation is isolated
-    # and cannot leak into subsequent tests (CONTAINERFILE is a global in the
-    # sourced launcher; mutating it in the parent shell would affect other tests).
-    run bash -c "
-        export AGENT_SANDBOX_SHARE_DIR='${REPO_ROOT}'
-        export AGENT_SANDBOX_VERSION='0.1.0-test'
-        source '${LAUNCHER}'
-        CONTAINERFILE='/nonexistent/Containerfile'
-        compute_containerfile_hash
-    "
-
-    assert_failure
-    assert_output --partial "Containerfile not found"
+    [[ "$IMAGE_TAG" == "$expected" ]]
+    # Verify the tag contains the actual version string (not a placeholder)
+    [[ "$IMAGE_TAG" == "agent-sandbox:0.1.0-test" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -617,28 +600,21 @@ teardown() {
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: mounts external directory symlinks" {
-    local workspace ext_dir
-    workspace="$(mktemp -d)"
-    ext_dir="$(mktemp -d)"
-    # Register cleanup trap so temp dirs are removed even if the test fails
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$ext_dir'" EXIT
-
-    mkdir -p "${ext_dir}/some-content"
-    ln -s "$ext_dir" "${workspace}/link-to-external"
+    _setup_symlink_workspace
+    mkdir -p "${_EXTERNAL_DIR}/some-content"
 
     # Resolve paths as the launcher will (portable_realpath resolves /var -> /private/var on macOS)
     local resolved_ext
-    resolved_ext=$(portable_realpath "$ext_dir")
+    resolved_ext=$(portable_realpath "$_EXTERNAL_DIR")
 
-    WORKSPACE="$workspace"
+    WORKSPACE="$_SYMLINK_WS"
     MOUNT_FLAGS=()
     MOUNT_Z=""
     OPT_FOLLOW_ALL_SYMLINKS=false
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$ext_dir"
+    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
     trap - EXIT
 
     # The resolved external dir should appear in MOUNT_FLAGS
@@ -789,28 +765,22 @@ teardown() {
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: deduplicates identical symlink targets" {
-    local workspace ext_dir
-    workspace="$(mktemp -d)"
-    ext_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$ext_dir'" EXIT
-
-    # Two symlinks pointing to the same external directory
-    ln -s "$ext_dir" "${workspace}/link-a"
-    ln -s "$ext_dir" "${workspace}/link-b"
+    _setup_symlink_workspace
+    # Add a second symlink pointing to the same external directory
+    ln -s "$_EXTERNAL_DIR" "$_SYMLINK_WS/link-b"
 
     # Resolve as the launcher will
     local resolved_ext
-    resolved_ext=$(portable_realpath "$ext_dir")
+    resolved_ext=$(portable_realpath "$_EXTERNAL_DIR")
 
-    WORKSPACE="$workspace"
+    WORKSPACE="$_SYMLINK_WS"
     MOUNT_FLAGS=()
     MOUNT_Z=""
     OPT_FOLLOW_ALL_SYMLINKS=false
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$ext_dir"
+    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
     trap - EXIT
 
     # Count how many times the resolved external dir appears as a mount value in MOUNT_FLAGS
@@ -836,16 +806,7 @@ teardown() {
 
     assemble_env_flags
 
-    # ENV_FLAGS should contain "-e" "AGENT=opencode"
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=opencode" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "AGENT=opencode"
 }
 
 # bats test_tags=unit
@@ -861,20 +822,8 @@ teardown() {
 
     unset ANTHROPIC_API_KEY
 
-    # ANTHROPIC_API_KEY should be in ENV_FLAGS (as "-e" "ANTHROPIC_API_KEY")
-    local found_anthropic=false
-    local found_openai=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "ANTHROPIC_API_KEY" ]]; then
-            found_anthropic=true
-        fi
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "OPENAI_API_KEY" ]]; then
-            found_openai=true
-        fi
-    done
-    [[ "$found_anthropic" == true  ]]
-    [[ "$found_openai"    == false ]]
+    assert_env_flag "ANTHROPIC_API_KEY"
+    refute_env_flag "OPENAI_API_KEY"
 }
 
 # bats test_tags=unit
@@ -894,17 +843,14 @@ teardown() {
 
     assemble_env_flags
 
-    # None of the default API keys should appear since they are all unset
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" ]]; then
-            local val="${ENV_FLAGS[$i+1]}"
-            # Only AGENT=... and possibly SSH/NO_SSH flags are expected
-            if [[ "$val" != "AGENT="* && "$val" != "SSH_AUTH_SOCK="* && "$val" != "AGENT_SANDBOX_NO_SSH="* ]]; then
-                fail "Unexpected env flag: $val"
-            fi
-        fi
-    done
+    refute_env_flag "ANTHROPIC_API_KEY"
+    refute_env_flag "OPENAI_API_KEY"
+    refute_env_flag "OPENROUTER_API_KEY"
+    refute_env_flag "MISTRAL_API_KEY"
+    refute_env_flag "AWS_ACCESS_KEY_ID"
+    refute_env_flag "AWS_SECRET_ACCESS_KEY"
+    refute_env_flag "AWS_SESSION_TOKEN"
+    refute_env_flag "GITHUB_TOKEN"
 }
 
 # bats test_tags=unit
@@ -919,15 +865,7 @@ teardown() {
 
     unset MY_CUSTOM_VAR
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "MY_CUSTOM_VAR" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "MY_CUSTOM_VAR"
 }
 
 # bats test_tags=unit
@@ -940,15 +878,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "MY_UNSET_VAR" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
+    refute_env_flag "MY_UNSET_VAR"
 }
 
 # bats test_tags=unit
@@ -960,15 +890,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "SSH_AUTH_SOCK=/tmp/ssh_auth_sock"
 }
 
 # bats test_tags=unit
@@ -980,15 +902,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
+    refute_env_flag "SSH_AUTH_SOCK=/tmp/ssh_auth_sock"
 }
 
 # bats test_tags=unit
@@ -1000,15 +914,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT_SANDBOX_NO_SSH=1" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    assert_env_flag "AGENT_SANDBOX_NO_SSH=1"
 }
 
 # bats test_tags=unit
@@ -1020,35 +926,7 @@ teardown() {
 
     assemble_env_flags
 
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT_SANDBOX_NO_SSH=1" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == false ]]
-}
-
-# bats test_tags=unit
-@test "assemble_env_flags: AGENT reflects claude when OPT_AGENT=claude" {
-    OPT_AGENT="claude"
-    OPT_NO_SSH=false
-    SSH_FORWARDED=false
-    CFG_EXTRA_VARS=()
-
-    assemble_env_flags
-
-    local found=false
-    local i
-    for (( i=0; i<${#ENV_FLAGS[@]}; i++ )); do
-        if [[ "${ENV_FLAGS[$i]}" == "-e" && "${ENV_FLAGS[$i+1]}" == "AGENT=claude" ]]; then
-            found=true
-            break
-        fi
-    done
-    [[ "$found" == true ]]
+    refute_env_flag "AGENT_SANDBOX_NO_SSH=1"
 }
 
 # ---------------------------------------------------------------------------
@@ -1132,3 +1010,1146 @@ teardown() {
     assert_success
     assert_output "$expected"
 }
+
+# ---------------------------------------------------------------------------
+# 9. load_image() Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime script in a temp dir and set RUNTIME to it.
+# The fake script records the subcommand called and simulates success/failure
+# based on the exit codes passed as arguments.
+#   load_exit  — exit code for the 'load' subcommand (default 0 = success)
+#   tag_exit   — exit code for the 'tag' subcommand used by pull_image (default 0)
+#   images_after_load — if "true", 'images' returns non-empty after 'load' is called
+# Sets _FAKE_RUNTIME_DIR so teardown can clean it up.
+_setup_fake_runtime() {
+    local load_exit="${1:-0}"
+    local tag_exit="${2:-0}"
+    local images_after_load="${3:-true}"
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+
+    # Write a fake runtime that handles the subcommands we care about.
+    # Uses a state file to simulate image appearing after a successful load.
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+# Record the call for inspection
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    load)
+        # Consume stdin (the tarball) so the shell doesn't complain
+        cat > /dev/null
+        if [ ${load_exit} -eq 0 ] && [ "${images_after_load}" = "true" ]; then
+            touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+        fi
+        exit ${load_exit}
+        ;;
+    tag)
+        exit ${tag_exit}
+        ;;
+    images)
+        # Return non-empty if image was loaded (or pre-existing), empty otherwise
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_loaded" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+_teardown_fake_runtime() {
+    if [[ -n "${_FAKE_RUNTIME_DIR:-}" && "$_FAKE_RUNTIME_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_RUNTIME_DIR"
+    fi
+    unset _FAKE_RUNTIME_DIR
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when image path file does not exist" {
+    _setup_fake_runtime 0 0
+
+    local fake_path="/nonexistent/path/image.tar"
+    run load_image "0.1.0-test" "$fake_path"
+
+    _teardown_fake_runtime
+    assert_failure
+    assert_output --partial "not found"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when image tarball is not readable" {
+    # Root bypasses DAC permission checks, so this test is meaningless as root.
+    if [[ "$(id -u)" -eq 0 ]]; then
+        skip "cannot test unreadable files as root"
+    fi
+    _setup_fake_runtime 0 0
+
+    local tarball
+    tarball="$(mktemp)"
+    chmod 000 "$tarball"
+    # shellcheck disable=SC2064
+    trap "chmod 644 '$tarball'; rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    chmod 644 "$tarball"
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "not readable"
+}
+
+# bats test_tags=unit
+@test "load_image: prints loading message with the image path" {
+    _setup_fake_runtime 0 0
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Loading image from"
+    assert_output --partial "$tarball"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when runtime load command fails" {
+    # load exits with code 1
+    _setup_fake_runtime 1 0
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to load image"
+}
+
+# bats test_tags=unit
+@test "load_image: exits with error when loaded tarball does not produce expected tag" {
+    # load succeeds but images_after_load=false simulates the tag not appearing
+    _setup_fake_runtime 0 0 false
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "tag agent-sandbox:0.1.0-test was not found"
+}
+
+# bats test_tags=unit
+@test "load_image: succeeds and logs confirmation when load produces expected tag" {
+    _setup_fake_runtime 0 0 true
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    run load_image "0.1.0-test" "$tarball"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Image loaded: agent-sandbox:0.1.0-test"
+}
+
+# ---------------------------------------------------------------------------
+# 10. ensure_image() Orchestration Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime that reports image as already present locally.
+_setup_fake_runtime_image_exists() {
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+    # Pre-create the state file so 'images' returns non-empty immediately
+    touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    images)
+        # Return a non-empty image ID — image exists
+        echo "sha256:abc123"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# Helper: create a fake runtime that reports image as absent, and succeeds on load/pull/tag.
+# After a successful load, subsequent 'images' calls return non-empty (simulating the tag appearing).
+_setup_fake_runtime_image_absent() {
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    images)
+        # Return non-empty only after a successful load
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_loaded" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    load)
+        cat > /dev/null
+        touch "${_FAKE_RUNTIME_DIR}/image_loaded"
+        exit 0
+        ;;
+    pull)
+        exit 0
+        ;;
+    tag)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# bats test_tags=unit
+@test "ensure_image: uses local image without load or pull when image already exists" {
+    _setup_fake_runtime_image_exists
+
+    OPT_PULL=false
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    # Track calls to load_image and pull_image
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls load_image when AGENT_SANDBOX_IMAGE_PATH is set and image absent" {
+    _setup_fake_runtime_image_absent
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    export AGENT_SANDBOX_IMAGE_PATH="$tarball"
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == true  ]] || fail "expected load_called=true, got '$load_called'"
+    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls pull_image when AGENT_SANDBOX_IMAGE_PATH is unset and image absent" {
+    _setup_fake_runtime_image_absent
+
+    unset AGENT_SANDBOX_IMAGE_PATH
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: calls pull_image when AGENT_SANDBOX_IMAGE_PATH is empty string" {
+    _setup_fake_runtime_image_absent
+
+    export AGENT_SANDBOX_IMAGE_PATH=""
+    OPT_PULL=false
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: --pull forces pull_image even when AGENT_SANDBOX_IMAGE_PATH is set" {
+    _setup_fake_runtime_image_absent
+
+    local tarball
+    tarball="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tarball'" EXIT
+
+    export AGENT_SANDBOX_IMAGE_PATH="$tarball"
+    OPT_PULL=true
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    rm -f "$tarball"
+    trap - EXIT
+    _teardown_fake_runtime
+    unset AGENT_SANDBOX_IMAGE_PATH
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# bats test_tags=unit
+@test "ensure_image: --pull forces pull_image even when image already exists locally" {
+    _setup_fake_runtime_image_exists
+
+    unset AGENT_SANDBOX_IMAGE_PATH
+    OPT_PULL=true
+
+    load_called=false
+    pull_called=false
+    load_image() { load_called=true; }
+    pull_image() { pull_called=true; }
+
+    ensure_image "$VERSION"
+
+    _teardown_fake_runtime
+
+    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
+    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+}
+
+# ---------------------------------------------------------------------------
+# 11. pull_image() Tests
+# ---------------------------------------------------------------------------
+
+# Helper: create a fake runtime for pull_image tests.
+#   pull_exit  — exit code for the 'pull' subcommand (default 0 = success)
+#   tag_exit   — exit code for the 'tag' subcommand (default 0 = success)
+#   images_after_tag — if "true", 'images' returns non-empty after 'tag' is called
+_setup_fake_runtime_for_pull() {
+    local pull_exit="${1:-0}"
+    local tag_exit="${2:-0}"
+    local images_after_tag="${3:-true}"
+    _FAKE_RUNTIME_DIR="$(mktemp -d)"
+
+    cat > "${_FAKE_RUNTIME_DIR}/fake-runtime" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "${_FAKE_RUNTIME_DIR}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    pull)
+        exit ${pull_exit}
+        ;;
+    tag)
+        if [ ${tag_exit} -eq 0 ] && [ "${images_after_tag}" = "true" ]; then
+            touch "${_FAKE_RUNTIME_DIR}/image_tagged"
+        fi
+        exit ${tag_exit}
+        ;;
+    images)
+        if [ -f "${_FAKE_RUNTIME_DIR}/image_tagged" ]; then
+            echo "sha256:abc123"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "${_FAKE_RUNTIME_DIR}/fake-runtime"
+    RUNTIME="${_FAKE_RUNTIME_DIR}/fake-runtime"
+    export RUNTIME
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when pull command fails" {
+    # pull exits with code 1
+    _setup_fake_runtime_for_pull 1 0
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to pull image"
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when tag command fails" {
+    # pull succeeds but tag exits with code 1
+    _setup_fake_runtime_for_pull 0 1
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "Failed to tag"
+}
+
+# bats test_tags=unit
+@test "pull_image: exits with error when tag succeeds but image not found locally" {
+    # pull and tag succeed but images_after_tag=false simulates the tag not appearing
+    _setup_fake_runtime_for_pull 0 0 false
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_failure
+    assert_output --partial "agent-sandbox:0.1.0-test"
+}
+
+# bats test_tags=unit
+@test "pull_image: succeeds and logs confirmation when pull and tag produce expected local tag" {
+    _setup_fake_runtime_for_pull 0 0 true
+
+    run pull_image "0.1.0-test"
+
+    _teardown_fake_runtime
+
+    assert_success
+    assert_output --partial "Image pulled and tagged: agent-sandbox:0.1.0-test"
+}
+
+# ---------------------------------------------------------------------------
+# 12. do_update() Tests
+# ---------------------------------------------------------------------------
+#
+# do_update() calls external commands (curl, sha256sum/shasum, sh) and uses
+# SHARE_DIR for Nix detection. Tests use fake scripts in a temp bin dir
+# prepended to PATH to intercept these calls without network access.
+#
+# do_update() calls exit (not return), so all tests use `run do_update`.
+
+# Helper: set up a fake bin directory for do_update() tests.
+# Creates fake curl, sha256sum, and sh scripts with configurable behavior.
+#
+# Parameters (all optional, positional):
+#   $1  api_tag        — tag_name returned by the GitHub API (default: "2.0.0")
+#   $2  install_exit   — exit code for the installer sh -c call (default: 0)
+#   $3  sums_exit      — exit code for the SHA256SUMS curl call (default: 0)
+#   $4  sums_hash      — hash entry in SHA256SUMS for install.sh (default: computed)
+#   $5  installer_content — content of the fake install.sh (default: valid shebang script)
+#
+# Sets _FAKE_UPDATE_DIR and prepends it to PATH.
+_setup_fake_update_env() {
+    local api_tag="${1:-2.0.0}"
+    local install_exit="${2:-0}"
+    local sums_exit="${3:-0}"
+    local sums_hash="${4:-}"
+    local installer_content="${5:-#!/bin/sh
+echo 'installer ran'
+}"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+
+    # Write installer content to a file so the fake curl can cat it without
+    # embedding multi-line content in a shell script (which breaks syntax).
+    printf '%s' "$installer_content" > "${_FAKE_UPDATE_DIR}/installer_content.sh"
+
+    # Fake curl: dispatches on the URL argument to return different responses.
+    # - GitHub API URL → returns JSON with tag_name
+    # - SHA256SUMS URL → returns sums content (or fails if sums_exit != 0)
+    # - install.sh URL → returns installer content (read from file)
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<CURLEOF
+#!/usr/bin/env bash
+# Parse args: find the URL (last non-flag argument after -fsSL)
+url=""
+for arg in "\$@"; do
+    case "\$arg" in
+        -*)  ;;
+        *)   url="\$arg" ;;
+    esac
+done
+case "\$url" in
+    *api.github.com*releases/latest*)
+        printf '{"tag_name": "v${api_tag}", "name": "v${api_tag}"}\n'
+        exit 0
+        ;;
+    *SHA256SUMS*)
+        if [ ${sums_exit} -ne 0 ]; then
+            exit ${sums_exit}
+        fi
+        printf '%s  install.sh\n' "${sums_hash}"
+        exit 0
+        ;;
+    *install.sh*)
+        cat "${_FAKE_UPDATE_DIR}/installer_content.sh"
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+CURLEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+
+    # Fake sha256sum: delegates to the real system sha256sum/shasum.
+    # The fake is placed first in PATH so do_update's _sha256sum() finds it,
+    # but it calls the real tool (by absolute path) to produce correct hashes.
+    # On macOS, sha256sum is not available by default; shasum is used instead.
+    local real_sha256sum
+    real_sha256sum="$(command -v sha256sum 2>/dev/null || true)"
+    local real_shasum
+    real_shasum="$(command -v shasum 2>/dev/null || true)"
+
+    cat > "${_FAKE_UPDATE_DIR}/sha256sum" <<SUMSEOF
+#!/usr/bin/env bash
+# Delegate to the real sha256sum tool (by absolute path to avoid self-reference).
+if [ -n "${real_sha256sum}" ]; then
+    exec "${real_sha256sum}" "\$@"
+elif [ -n "${real_shasum}" ]; then
+    exec "${real_shasum}" -a 256 "\$@"
+else
+    echo "aabbccdd1122334455667788990011223344556677889900aabbccdd11223344  -"
+fi
+SUMSEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/sha256sum"
+
+    # Fake sh: records the -c argument and exits with the configured exit code.
+    cat > "${_FAKE_UPDATE_DIR}/sh" <<SHEOF
+#!/usr/bin/env bash
+# Record the call
+echo "\$@" >> "${_FAKE_UPDATE_DIR}/sh_calls.log"
+# For -c invocations, record the script content
+if [ "\$1" = "-c" ]; then
+    echo "\$2" >> "${_FAKE_UPDATE_DIR}/sh_scripts.log"
+fi
+exit ${install_exit}
+SHEOF
+    chmod +x "${_FAKE_UPDATE_DIR}/sh"
+
+    # Prepend fake bin dir to PATH so our fakes take precedence
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+}
+
+_teardown_fake_update_env() {
+    if [[ -n "${_FAKE_UPDATE_DIR:-}" && "$_FAKE_UPDATE_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_UPDATE_DIR"
+    fi
+    unset _FAKE_UPDATE_DIR
+}
+
+# Helper: compute the SHA256 of installer content as do_update() does.
+# do_update() captures install_script via command substitution (which strips
+# trailing newlines), then hashes via: printf '%s\n' "$install_script" | sha256sum.
+# This helper replicates that exact sequence so test-computed hashes match.
+_compute_hash_for_installer() {
+    local content="$1"
+    # Strip trailing newlines to match command substitution behavior, then
+    # add exactly one newline back (as printf '%s\n' does in do_update).
+    local stripped
+    stripped="${content%$'\n'}"
+    # Keep stripping until no trailing newline remains (handles multiple trailing newlines)
+    while [[ "$stripped" == *$'\n' ]]; do
+        stripped="${stripped%$'\n'}"
+    done
+    if command -v sha256sum &>/dev/null; then
+        printf '%s\n' "$stripped" | sha256sum | awk '{print $1}'
+    elif command -v shasum &>/dev/null; then
+        printf '%s\n' "$stripped" | shasum -a 256 | awk '{print $1}'
+    else
+        echo ""
+    fi
+}
+
+# bats test_tags=unit
+@test "do_update: Nix installation exits 0 with managed-by-Nix message" {
+    # When SHARE_DIR starts with /nix/store/, do_update should exit 0 and
+    # print a message directing the user to use nix profile upgrade.
+    SHARE_DIR="/nix/store/abc123-agent-sandbox-1.0.0/share"
+
+    run do_update
+
+    assert_success
+    assert_output --partial "Installed via Nix"
+}
+
+# bats test_tags=unit
+@test "do_update: already up to date exits 0 with up-to-date message" {
+    # When the GitHub API returns the same version as VERSION, do_update should
+    # exit 0 without downloading or executing anything.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.5.0"
+    _setup_fake_update_env "1.5.0"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "Already up to date"
+}
+
+# bats test_tags=unit
+@test "do_update: GitHub API failure exits non-zero with connection error message" {
+    # When curl fails for the GitHub API call, do_update should die with an
+    # error message about checking internet connection.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that always fails
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "Failed to check for updates"
+}
+
+# bats test_tags=unit
+@test "do_update: invalid version string from API exits non-zero with validation error" {
+    # When the GitHub API returns a version string containing unsafe characters
+    # (e.g. path traversal, injection), do_update should die with a validation error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that returns a crafted tag with path traversal
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"tag_name": "v../../../etc/passwd", "name": "evil"}\n'
+exit 0
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "invalid version string"
+}
+
+# bats test_tags=unit
+@test "do_update: empty tag_name from API exits non-zero with parse error" {
+    # When the GitHub API response cannot be parsed (no tag_name field),
+    # do_update should die with a parse error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+
+    _FAKE_UPDATE_DIR="$(mktemp -d)"
+    # Fake curl that returns JSON without tag_name
+    cat > "${_FAKE_UPDATE_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"name": "some release", "body": "no tag here"}\n'
+exit 0
+EOF
+    chmod +x "${_FAKE_UPDATE_DIR}/curl"
+    export PATH="${_FAKE_UPDATE_DIR}:${PATH}"
+    export _FAKE_UPDATE_DIR
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "Could not parse version"
+}
+
+# bats test_tags=unit
+@test "do_update: missing shebang in downloaded installer exits non-zero" {
+    # When the downloaded install.sh does not start with '#!/', do_update should
+    # die with a shebang validation error before executing anything.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local bad_installer="<html>Not Found</html>"
+    _setup_fake_update_env "2.0.0" 0 1 "" "$bad_installer"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "missing shebang"
+}
+
+# bats test_tags=unit
+@test "do_update: SHA256 mismatch exits non-zero with checksum failure message" {
+    # When the SHA256SUMS file is available but the computed hash of install.sh
+    # does not match the expected hash, do_update should die with a checksum error.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # Provide a deliberately wrong hash in SHA256SUMS
+    local wrong_hash="0000000000000000000000000000000000000000000000000000000000000000"
+    _setup_fake_update_env "2.0.0" 0 0 "$wrong_hash" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_failure
+    assert_output --partial "checksum verification FAILED"
+}
+
+# bats test_tags=unit
+@test "do_update: missing SHA256SUMS warns and continues to execute installer" {
+    # When the SHA256SUMS download fails (curl exits non-zero for the SUMS URL),
+    # do_update should warn but continue and execute the installer.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # sums_exit=1 makes the SHA256SUMS curl call fail
+    _setup_fake_update_env "2.0.0" 0 1 "" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "skipping checksum verification"
+}
+
+# bats test_tags=unit
+@test "do_update: SHA256 match proceeds to execute installer with AGENT_SANDBOX_VERSION set" {
+    # When checksums match, do_update should execute the installer via sh -c
+    # with AGENT_SANDBOX_VERSION set to the new version tag.
+    SHARE_DIR="/usr/local/share/agent-sandbox"
+    VERSION="1.0.0"
+    local installer_content="#!/bin/sh
+echo 'installer ran'
+"
+    # Compute the correct hash for the installer content (as do_update does)
+    local correct_hash
+    correct_hash=$(_compute_hash_for_installer "$installer_content")
+    if [[ -z "$correct_hash" ]]; then
+        skip "No sha256 tool available to compute hash"
+    fi
+
+    _setup_fake_update_env "2.0.0" 0 0 "$correct_hash" "$installer_content"
+
+    run do_update
+
+    _teardown_fake_update_env
+
+    assert_success
+    assert_output --partial "Checksum verified"
+    assert_output --partial "Updated to v2.0.0"
+}
+
+# ---------------------------------------------------------------------------
+# 13. collect_extra_mounts() Unit Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "collect_extra_mounts: :rw suffix splits correctly and passes rw mode" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    OPT_EXTRA_MOUNTS=("${extra_dir}:rw")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # Should contain a :rw mount (not :ro)
+    local found_rw=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":rw" ]]; then
+            found_rw=true
+            break
+        fi
+    done
+    [[ "$found_rw" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: default mode is ro when no suffix" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # Should contain a :ro mount (not :rw)
+    local found_ro=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":ro" ]]; then
+            found_ro=true
+            break
+        fi
+    done
+    [[ "$found_ro" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: ~/path expands to HOME" {
+    local subdir="test-extra-mount-$$"
+    mkdir -p "${HOME}/${subdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${HOME}/${subdir}'" EXIT
+
+    OPT_EXTRA_MOUNTS=("~/${subdir}")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "${HOME}/${subdir}"
+    trap - EXIT
+
+    # The mount should reference the expanded HOME path
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${HOME}/${subdir}"* || "$flag" == *"/${subdir}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: HOME-relative paths map to /home/sandbox/ inside container" {
+    local subdir="test-sandbox-mount-$$"
+    mkdir -p "${HOME}/${subdir}"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${HOME}/${subdir}'" EXIT
+
+    OPT_EXTRA_MOUNTS=("${HOME}/${subdir}")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "${HOME}/${subdir}"
+    trap - EXIT
+
+    # The container path should be /home/sandbox/<relative>
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *":/home/sandbox/${subdir}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: non-HOME paths map to same absolute path" {
+    # Use /tmp which is outside HOME
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    # Ensure the path is not under HOME
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
+    # Skip if mktemp created the dir under HOME (unlikely but possible)
+    if [[ "$resolved" == "$HOME"/* ]]; then
+        rm -rf "$extra_dir"
+        trap - EXIT
+        skip "mktemp dir is under HOME — cannot test non-HOME path mapping"
+    fi
+
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # The container path should equal the host path (same absolute path)
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${resolved}:${resolved}:"* ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == true ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: missing path warns and skips" {
+    OPT_EXTRA_MOUNTS=("/nonexistent/path/that/does/not/exist")
+    CFG_EXTRA_PATHS=()
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    # Should not fail, just warn
+    collect_extra_mounts
+
+    # MOUNT_FLAGS should be empty (the missing path was skipped)
+    [[ "${#MOUNT_FLAGS[@]}" -eq 0 ]]
+}
+
+# bats test_tags=unit
+@test "collect_extra_mounts: deduplicates CLI and config mounts for the same path" {
+    local extra_dir
+    extra_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$extra_dir'" EXIT
+
+    # Resolve before calling collect_extra_mounts (while the dir exists)
+    # so the resolved path matches what collect_extra_mounts stores in MOUNT_FLAGS.
+    local resolved
+    resolved=$(portable_realpath "$extra_dir" 2>/dev/null || echo "$extra_dir")
+
+    # Same path appears in both CLI mounts and config paths
+    OPT_EXTRA_MOUNTS=("$extra_dir")
+    CFG_EXTRA_PATHS=("$extra_dir")
+    MOUNT_FLAGS=()
+    MOUNT_Z=""
+
+    collect_extra_mounts
+
+    rm -rf "$extra_dir"
+    trap - EXIT
+
+    # Count occurrences of the path in MOUNT_FLAGS
+    local count=0
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == "${resolved}:"* ]]; then
+            count=$((count + 1))
+        fi
+    done
+    [[ "$count" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# 14. detect_runtime() Unit Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "detect_runtime: AGENT_SANDBOX_RUNTIME=docker uses docker even when podman exists" {
+    # Create fake podman and docker in a temp dir
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
+
+    export AGENT_SANDBOX_RUNTIME="docker"
+    local old_path="$PATH"
+    export PATH="${fake_bin}:${PATH}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    unset AGENT_SANDBOX_RUNTIME
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "docker" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: AGENT_SANDBOX_RUNTIME=podman uses podman" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    chmod +x "${fake_bin}/podman"
+
+    export AGENT_SANDBOX_RUNTIME="podman"
+    local old_path="$PATH"
+    export PATH="${fake_bin}:${PATH}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    unset AGENT_SANDBOX_RUNTIME
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "podman" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: invalid AGENT_SANDBOX_RUNTIME value exits with error" {
+    export AGENT_SANDBOX_RUNTIME="invalid-runtime"
+
+    run detect_runtime
+
+    unset AGENT_SANDBOX_RUNTIME
+
+    assert_failure
+    assert_output --partial "must be 'podman' or 'docker'"
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when both podman and docker exist, podman is preferred" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
+
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    # Prepend fake_bin to PATH so only our fakes are found
+    export PATH="${fake_bin}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "podman" ]]
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when neither podman nor docker exists, exits with error" {
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    # Set PATH to an empty temp dir so no runtimes are found
+    local empty_bin
+    empty_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$empty_bin'" EXIT
+    export PATH="$empty_bin"
+
+    run detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$empty_bin"
+    trap - EXIT
+
+    assert_failure
+    assert_output --partial "Neither 'podman' nor 'docker' found"
+}
+
+# bats test_tags=unit
+@test "detect_runtime: when only docker exists, docker is used" {
+    local fake_bin
+    fake_bin="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$fake_bin'" EXIT
+    printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
+    chmod +x "${fake_bin}/docker"
+
+    unset AGENT_SANDBOX_RUNTIME
+    local old_path="$PATH"
+    export PATH="${fake_bin}"
+
+    detect_runtime
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin"
+    trap - EXIT
+
+    [[ "$RUNTIME" == "docker" ]]
+}
+

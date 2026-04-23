@@ -33,7 +33,7 @@ A static `install.sh` script in the repo root that non-Nix users pipe through `c
 - [ ] When `AGENT_SANDBOX_VERSION` is not set, the installer queries the GitHub API (`/repos/mstruble/agent-sandbox/releases/latest`) to determine the latest version.
 - [ ] The tarball is extracted to a temporary directory and files are moved to their final locations.
 - [ ] The launcher is placed at `~/.local/bin/agent-sandbox` with executable permissions.
-- [ ] Support files (Containerfile, entrypoint.sh, init-firewall.sh) are placed at `~/.local/share/agent-sandbox/`.
+- [ ] Support files (entrypoint.sh, init-firewall.sh) are placed at `~/.local/share/agent-sandbox/`.
 - [ ] `~/.local/bin/` and `~/.local/share/agent-sandbox/` are created if they do not exist.
 - [ ] The installer does not use `sudo` at any point.
 

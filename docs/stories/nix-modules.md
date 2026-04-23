@@ -4,7 +4,8 @@
 PRD Capability Group: Distribution
 Behaviors covered:
 - The flake exposes a NixOS module (`nixosModules.default`), a nix-darwin module (`darwinModules.default`), and a Home Manager module (`homeManagerModules.default`).
-- All three modules expose `enable`, `package`, and `containerPackage` options.
+- All three modules expose `enable`, `package`, `containerPackage`, and `image` options.
+- When `image` is set, the launcher is wrapped with `AGENT_SANDBOX_IMAGE_PATH` pointing to the image store path, enabling local image loading without GHCR.
 - The Home Manager module generates `~/.config/agent-sandbox/config.toml` from typed Nix options.
 - The NixOS and nix-darwin modules do not manage agent-sandbox configuration.
 
@@ -22,15 +23,18 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
 - [ ] `programs.agent-sandbox.enable` (bool, default `false`) — when `true`, adds the package to the environment.
 - [ ] `programs.agent-sandbox.package` — defaults to the flake's own package. Overridable.
 - [ ] `programs.agent-sandbox.containerPackage` (`nullOr package`) — defaults to `pkgs.podman` on Linux, `null` on darwin. When set, added to the environment. When `null`, no container runtime is provided by the module.
+- [ ] `programs.agent-sandbox.image` (`nullOr package`) — defaults to `null`. When set, the launcher package is wrapped with `AGENT_SANDBOX_IMAGE_PATH` set to the image store path. When `null`, the launcher falls back to GHCR pull.
 
 ### NixOS module (`nixosModules.default`)
 - [ ] Adds `agent-sandbox` to `environment.systemPackages` when enabled.
+- [ ] When `image` is set, the installed launcher is wrapped via `wrapProgram` with `AGENT_SANDBOX_IMAGE_PATH` pointing to the image store path.
 - [ ] Adds `containerPackage` to `environment.systemPackages` when non-null.
 - [ ] Does not manage `~/.config/agent-sandbox/config.toml`.
 - [ ] Module lives at `modules/nixos.nix`.
 
 ### nix-darwin module (`darwinModules.default`)
 - [ ] Adds `agent-sandbox` to `environment.systemPackages` when enabled.
+- [ ] When `image` is set, the installed launcher is wrapped via `wrapProgram` with `AGENT_SANDBOX_IMAGE_PATH` pointing to the image store path.
 - [ ] Adds `containerPackage` to `environment.systemPackages` when non-null.
 - [ ] `containerPackage` defaults to `null` on darwin.
 - [ ] Does not manage `~/.config/agent-sandbox/config.toml`.
@@ -38,10 +42,11 @@ Migrate the flake from `flake-utils` to `flake-parts` to support system-agnostic
 
 ### Home Manager module (`homeManagerModules.default`)
 - [ ] Adds `agent-sandbox` to `home.packages` when enabled.
+- [ ] When `image` is set, the installed launcher is wrapped via `wrapProgram` with `AGENT_SANDBOX_IMAGE_PATH` pointing to the image store path.
 - [ ] Adds `containerPackage` to `home.packages` when non-null.
 - [ ] `containerPackage` defaults to `pkgs.podman` when `pkgs.stdenv.isLinux`, `null` otherwise.
 - [ ] Exposes typed options under `programs.agent-sandbox.settings`:
-  - `defaultAgent` — `enum [ "opencode" "claude" ]`, default `"opencode"`.
+  - `defaultAgent` — `enum [ "opencode" ]`, default `"opencode"`.
   - `env.extraVars` — `listOf str`, default `[]`.
   - `workspace.followSymlinks` — `bool`, default `false`.
   - `workspace.followAllSymlinks` — `bool`, default `false`.

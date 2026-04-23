@@ -8,31 +8,32 @@ Behaviors covered:
 - ShellCheck validates all bash scripts (`agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, `install.sh`).
 - `nixfmt` validates Nix formatting; `nix flake check` validates the flake evaluates correctly; `nix build` validates the package builds.
 - PR titles are validated against the conventional commit format.
-- Trivy scans the built container image for HIGH and CRITICAL vulnerabilities on every PR.
+- `vulnix` scans the Nix store closure of the built container image for known vulnerabilities on every PR.
 - Trivy performs a filesystem scan on the repository on every PR.
 - All CI checks are required to pass before a PR can be merged.
 - PRs are merged via squash-merge only.
 
 ## Summary
-A `pr-checks.yml` workflow runs parallel jobs on every PR to main: lint (ShellCheck, nixfmt, nix flake check, conventional commit PR title), build+scan+test (docker build, Trivy container and filesystem scans, full test suite), and nix build. All jobs must pass before merge. Branch protection enforces required checks and squash-merge.
+A `pr-checks.yml` workflow runs parallel jobs on every PR to main: lint (ShellCheck, nixfmt, nix flake check, conventional commit PR title), build+scan+test (nix build container image, vulnix closure scan, Trivy filesystem scan, full test suite), and nix build (launcher package). All jobs must pass before merge. Branch protection enforces required checks and squash-merge.
 
 ## Acceptance Criteria
 
 ### Lint job
 - [ ] ShellCheck runs against `agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, and `install.sh`; the job fails if any script has warnings or errors.
-- [ ] `nixfmt --check flake.nix` runs and fails the job if the file is not formatted.
+- [ ] `nixfmt --check` runs against `flake.nix` and all `.nix` files in `packages/`; fails if not formatted.
 - [ ] `nix flake check` runs and fails the job if the flake does not evaluate.
 - [ ] PR title is validated against conventional commit format via `amannn/action-semantic-pull-request`; the job fails if the title does not match.
 
 ### Build + Scan + Test job
-- [ ] The container image is built from the `Containerfile` using `docker build`.
-- [ ] Trivy runs a container scan against the built image at HIGH and CRITICAL severity thresholds; the job fails if vulnerabilities are found.
+- [ ] The container image is built via `nix build .#container-image`.
+- [ ] The image tarball is loaded into the local Docker daemon via `docker load`.
+- [ ] `vulnix` scans the Nix store closure of the image for known vulnerabilities; the job fails if vulnerabilities above the configured threshold are found.
 - [ ] Trivy runs a filesystem scan against the repository; the job fails if vulnerabilities are found.
 - [ ] The image is **not** pushed to any registry during PR checks.
-- [ ] `make test` runs after the image build, executing all test tiers (unit, integration, e2e); the job fails if any test fails.
+- [ ] `make test` runs after the image is loaded, executing all test tiers (unit, integration, e2e); the job fails if any test fails.
 
 ### Nix build job
-- [ ] `nix build` runs successfully, verifying the Nix package builds.
+- [ ] `nix build` runs successfully, verifying the launcher Nix package builds.
 
 ### Workflow configuration
 - [ ] The workflow triggers on `pull_request` events targeting the `main` branch.
@@ -49,5 +50,6 @@ A `pr-checks.yml` workflow runs parallel jobs on every PR to main: lint (ShellCh
 - None.
 
 ## Out of Scope
-- Publishing images to GHCR (see image-publishing story).
-- Security scanning on pushes to main (see image-publishing story).
+- Publishing images to GHCR (see multi-arch-image-publishing story).
+- Security scanning on pushes to main (see multi-arch-image-publishing story).
+- vulnix severity threshold tuning (see vulnix-scanning story).

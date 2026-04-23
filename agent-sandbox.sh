@@ -31,6 +31,17 @@ portable_realpath() {
 	fi
 }
 
+# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
+_sha256sum() {
+	if command -v sha256sum &>/dev/null; then
+		sha256sum "$@"
+	elif command -v shasum &>/dev/null; then
+		shasum -a 256 "$@"
+	else
+		return 1
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # Usage / help
 # ---------------------------------------------------------------------------
@@ -40,15 +51,15 @@ usage() {
 Usage: agent-sandbox [OPTIONS] [WORKSPACE]
 
 Options:
-  -a, --agent <name>       Agent to run: opencode (default) or claude
-  -b, --build              Force rebuild image before running
+  -a, --agent <name>       Agent to run: opencode (default)
+  -b, --pull               Force re-pull image from GHCR before running
   --follow-symlinks        Mount depth-1 symlink targets from the workspace (skips dotfile dirs)
   --follow-all-symlinks    Like --follow-symlinks but includes dotfile directories (.ssh, .gnupg, etc.)
   --mount <path>           Mount an extra host path read-only (repeatable; append :rw for read-write)
   --no-ssh                 Skip SSH agent socket forwarding
   --list                   List running agent-sandbox containers
   --stop                   Stop sandbox(es) for the given/current workspace
-  --prune                  Remove old agent-sandbox images, keeping only the current hash
+  --prune                  Remove old agent-sandbox images, keeping only the current version
   --update                 Update to the latest version
   -v, --version            Print version and exit
   -h, --help               Show help
@@ -58,17 +69,14 @@ Arguments:
 
 Examples:
   agent-sandbox                        # opencode on current directory
-  agent-sandbox --agent claude         # claude-code on current directory
   agent-sandbox ~/projects/foo         # opencode on ~/projects/foo
-  agent-sandbox --agent claude ~/work  # claude-code on ~/work
   agent-sandbox --follow-symlinks      # mount workspace symlink targets
   agent-sandbox --mount ~/.kube        # mount kubectl config read-only
   agent-sandbox --mount ~/data:rw      # mount a directory read-write
   agent-sandbox --no-ssh               # skip SSH agent forwarding
-  agent-sandbox --build                # force image rebuild, then run
+  agent-sandbox --pull                 # force image re-pull, then run
   agent-sandbox --list                 # show running sandboxes
   agent-sandbox --stop                 # stop all sandboxes for current directory
-  agent-sandbox --stop --agent claude  # stop only the claude sandbox
   agent-sandbox --stop ~/projects/foo  # stop all sandboxes for that path
   agent-sandbox --prune                # remove stale images
   agent-sandbox --update               # update to the latest version
@@ -82,7 +90,7 @@ EOF
 parse_args() {
 	OPT_AGENT=""
 	OPT_AGENT_EXPLICIT="" # set only when --agent is passed on CLI; used for --stop dispatch
-	OPT_BUILD=false
+	OPT_PULL=false
 	OPT_FOLLOW_SYMLINKS=false
 	OPT_FOLLOW_ALL_SYMLINKS=false
 	OPT_NO_SSH=false
@@ -103,8 +111,8 @@ parse_args() {
 			OPT_AGENT_EXPLICIT="$2"
 			shift 2
 			;;
-		-b | --build)
-			OPT_BUILD=true
+		-b | --pull)
+			OPT_PULL=true
 			shift
 			;;
 		--follow-symlinks)
@@ -166,6 +174,17 @@ parse_args() {
 			;;
 		esac
 	done
+
+	# Process any remaining positional arguments after '--'.
+	# After '--', option parsing stops; remaining args are positional only.
+	while [[ $# -gt 0 ]]; do
+		if [[ -z "$OPT_WORKSPACE" ]]; then
+			OPT_WORKSPACE="$1"
+		else
+			die "Unexpected argument: $1"
+		fi
+		shift
+	done
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +231,9 @@ do_update() {
 		die "GitHub API returned an invalid version string: '${latest_tag}'"
 	fi
 
-	# Compare versions
+	# Compare versions — string equality is intentional: the GitHub releases/latest
+	# API always returns the most recent release tag, so an exact match means we
+	# are already on the newest release.
 	if [[ "$latest_tag" == "$VERSION" ]]; then
 		log "Already up to date (v${VERSION})."
 		exit 0
@@ -234,16 +255,10 @@ do_update() {
 	fi
 
 	# Verify install.sh integrity against the release SHA256SUMS file.
-	# Portable sha256 wrapper: GNU coreutils provides sha256sum; macOS ships shasum.
-	_sha256sum() {
-		if command -v sha256sum &>/dev/null; then
-			sha256sum "$@"
-		elif command -v shasum &>/dev/null; then
-			shasum -a 256 "$@"
-		else
-			return 1
-		fi
-	}
+	# Trust model: HTTPS transport + SHA256 content hash. The warn-and-continue
+	# path on a missing SHA256SUMS file is an accepted risk for early releases
+	# that may not yet publish a SUMS file; the HTTPS channel still provides
+	# transport-level integrity.
 	local sums_url="https://github.com/mstruble/agent-sandbox/releases/download/v${latest_tag}/SHA256SUMS"
 	local sums_content
 	if sums_content=$(curl -fsSL "$sums_url" 2>/dev/null) && _sha256sum /dev/null &>/dev/null; then
@@ -353,8 +368,8 @@ else:
 	local val
 	val=$(_cfg_get "defaults.agent")
 	if [[ -n "$val" ]]; then
-		if [[ "$val" != "opencode" && "$val" != "claude" ]]; then
-			die "Config error: defaults.agent must be 'opencode' or 'claude', got '$val'"
+		if [[ "$val" != "opencode" ]]; then
+			die "Config error: defaults.agent must be 'opencode', got '$val'"
 		fi
 		CFG_AGENT="$val"
 	fi
@@ -390,6 +405,9 @@ else:
 	# [resources] memory
 	val=$(_cfg_get "resources.memory")
 	if [[ -n "$val" ]]; then
+		if ! [[ "$val" =~ ^[0-9]+[kmgKMG]?$ ]]; then
+			die "Config error: resources.memory must be a number with optional unit (k/m/g), got '$val'"
+		fi
 		CFG_MEMORY="$val"
 	fi
 
@@ -411,8 +429,8 @@ apply_config_defaults() {
 	fi
 
 	# Validate agent value
-	if [[ "$OPT_AGENT" != "opencode" && "$OPT_AGENT" != "claude" ]]; then
-		die "--agent must be 'opencode' or 'claude', got '$OPT_AGENT'"
+	if [[ "$OPT_AGENT" != "opencode" ]]; then
+		die "--agent must be 'opencode', got '$OPT_AGENT'"
 	fi
 
 	# Apply config follow_symlinks
@@ -503,31 +521,81 @@ compute_container_name() {
 }
 
 # ---------------------------------------------------------------------------
-# Containerfile hash / image management
+# Image management (local cache, tarball load, or GHCR pull)
 # ---------------------------------------------------------------------------
 
-CONTAINERFILE="${SHARE_DIR}/Containerfile"
+GHCR_IMAGE="ghcr.io/mstruble/agent-sandbox"
 RUNTIME=""
 
-compute_containerfile_hash() {
-	if [[ ! -f "$CONTAINERFILE" ]]; then
-		die "Containerfile not found at '$CONTAINERFILE'. Is SHARE_DIR set correctly?"
-	fi
-	sha256sum "$CONTAINERFILE" | cut -c1-64
-}
-
-image_exists() {
+image_exists_locally() {
 	local tag="$1"
 	local result
 	result=$("$RUNTIME" images -q "agent-sandbox:${tag}" 2>/dev/null || true)
 	[[ -n "$result" ]]
 }
 
-build_image() {
+pull_image() {
 	local tag="$1"
-	log "Building image agent-sandbox:${tag}..."
-	"$RUNTIME" build -t "agent-sandbox:${tag}" -f "$CONTAINERFILE" "$SHARE_DIR"
-	log "Image built: agent-sandbox:${tag}"
+	log "Pulling image ${GHCR_IMAGE}:${tag}..."
+	if ! "$RUNTIME" pull "${GHCR_IMAGE}:${tag}"; then
+		die "Failed to pull image ${GHCR_IMAGE}:${tag}. Check your internet connection and that the image exists."
+	fi
+	# Tag locally so we can reference it as agent-sandbox:<version> everywhere
+	"$RUNTIME" tag "${GHCR_IMAGE}:${tag}" "agent-sandbox:${tag}" ||
+		die "Failed to tag ${GHCR_IMAGE}:${tag} as agent-sandbox:${tag}"
+	# Verify the expected tag is now present locally, mirroring load_image's pattern.
+	if ! image_exists_locally "$tag"; then
+		die "Image pulled and tagged but agent-sandbox:${tag} was not found locally. The tag operation may have failed silently."
+	fi
+	log "Image pulled and tagged: agent-sandbox:${tag}"
+}
+
+load_image() {
+	local tag="$1"
+	local path="$2"
+	if [[ ! -f "$path" ]]; then
+		die "Image tarball not found: ${path}"
+	fi
+	if [[ ! -r "$path" ]]; then
+		die "Image tarball is not readable (check permissions): ${path}"
+	fi
+	log "Loading image from ${path}..."
+	if ! "$RUNTIME" load <"$path"; then
+		die "Failed to load image from ${path}. Verify the file is a valid container image tarball."
+	fi
+	# Verify the expected tag is now present. The Nix-built tarball embeds
+	# name=agent-sandbox and tag=<version>, so the load should produce the
+	# correct local tag automatically. If it doesn't, the tarball is mismatched.
+	if ! image_exists_locally "$tag"; then
+		die "Image loaded from ${path} but tag agent-sandbox:${tag} was not found. The tarball may be built for a different version."
+	fi
+	log "Image loaded: agent-sandbox:${tag}"
+}
+
+# ensure_image implements the three-tier image sourcing chain:
+#   Tier 1: use local image if it already exists
+#   Tier 2: load from AGENT_SANDBOX_IMAGE_PATH tarball (set by Nix app wrapper; unset for non-Nix installs)
+#   Tier 3: pull from GHCR (non-Nix fallback)
+# --pull always forces tier 3 regardless of other tiers.
+ensure_image() {
+	local tag="$1"
+	if $OPT_PULL; then
+		pull_image "$tag"
+		return
+	fi
+	if image_exists_locally "$tag"; then
+		return
+	fi
+	if [[ -n "${AGENT_SANDBOX_IMAGE_PATH:-}" ]]; then
+		# AGENT_SANDBOX_IMAGE_PATH is set by the Nix app wrapper (flake.nix apps.default)
+		# and by the home-manager module's wrapProgram call. Any caller with control
+		# over the environment can set this variable to load an arbitrary image tarball;
+		# this is an accepted risk since environment control implies existing code
+		# execution capability.
+		load_image "$tag" "$AGENT_SANDBOX_IMAGE_PATH"
+		return
+	fi
+	pull_image "$tag"
 }
 
 # ---------------------------------------------------------------------------
@@ -583,10 +651,7 @@ do_stop() {
 # ---------------------------------------------------------------------------
 
 do_prune() {
-	local current_hash
-	current_hash=$(compute_containerfile_hash)
-
-	log "Current Containerfile hash: ${current_hash}"
+	log "Current version: ${VERSION}"
 	log "Pruning old agent-sandbox images..."
 
 	# List all agent-sandbox images
@@ -602,7 +667,7 @@ do_prune() {
 	while IFS= read -r image; do
 		[[ -z "$image" ]] && continue
 		local tag="${image#agent-sandbox:}"
-		if [[ "$tag" == "$current_hash" ]]; then
+		if [[ "$tag" == "$VERSION" ]]; then
 			log "Keeping current image: $image"
 			continue
 		fi
@@ -661,7 +726,9 @@ collect_symlink_mounts() {
 			fi
 		fi
 
-		# Deduplicate by resolved target path (exact line match)
+		# Deduplicate by resolved target path (exact line match).
+		# _seen_targets is a newline-delimited string used as a set; grep -qFx
+		# matches the full line exactly (no regex, no partial matches).
 		if printf '%s\n' "$_seen_targets" | grep -qFx "$target"; then
 			continue
 		fi
@@ -757,17 +824,24 @@ assemble_mount_flags() {
 	# NOTE: The cleanup trap fires on launcher exit/error but NOT after a successful
 	# exec (which replaces the process). The staged dir persists for the container's
 	# lifetime — this is fine since the mount is read-only and permissions are tight.
+	#
+	# Double-trap pattern: register cleanup immediately after mktemp (unresolved path)
+	# so the directory is always removed on exit, even if portable_realpath fails.
+	# Then attempt to re-register with the resolved path (e.g. /tmp → /private/tmp on
+	# macOS) so Podman virtiofs bind-mounts work. If resolution fails, the original
+	# trap (unresolved path) remains active and still cleans up correctly.
 	_stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-config.XXXXXX")
-	# Register cleanup trap immediately after mktemp so the directory is always
-	# removed on exit, even if portable_realpath fails before the trap is set.
 	# shellcheck disable=SC2064  # intentional: bake in the path at trap-set time
 	trap "rm -rf '${_stage_dir}'" EXIT
 	# Resolve /tmp -> /private/tmp on macOS so Podman virtiofs bind-mounts work.
-	_stage_dir=$(portable_realpath "$_stage_dir")
+	# Guard: only re-register if resolution succeeds; keep original trap on failure.
+	_resolved_stage_dir=$(portable_realpath "$_stage_dir" 2>/dev/null) || true
+	if [[ -n "$_resolved_stage_dir" ]]; then
+		_stage_dir="$_resolved_stage_dir"
+		# shellcheck disable=SC2064
+		trap "rm -rf '${_stage_dir}'" EXIT
+	fi
 	chmod 700 "$_stage_dir"
-	# Re-register trap with the resolved path so cleanup uses the canonical path.
-	# shellcheck disable=SC2064
-	trap "rm -rf '${_stage_dir}'" EXIT
 
 	# OpenCode config (ro, only if dir exists)
 	if [[ -d "${HOME}/.config/opencode" ]]; then
@@ -776,16 +850,6 @@ assemble_mount_flags() {
 			MOUNT_FLAGS+=("-v" "$_stage_dir/opencode:/host-config/opencode/:ro${MOUNT_Z}")
 		else
 			warn "Failed to stage opencode config (symlink resolution failed) — skipping"
-		fi
-	fi
-
-	# Claude config (ro, only if dir exists)
-	if [[ -d "${HOME}/.claude" ]]; then
-		mkdir -p "$_stage_dir/claude"
-		if cp -RL "${HOME}/.claude/." "$_stage_dir/claude/"; then
-			MOUNT_FLAGS+=("-v" "$_stage_dir/claude:/host-config/claude/:ro${MOUNT_Z}")
-		else
-			warn "Failed to stage claude config (symlink resolution failed) — skipping"
 		fi
 	fi
 
@@ -898,6 +962,14 @@ main() {
 
 	if $OPT_LIST; then do_list; fi
 	if $OPT_STOP; then do_stop "${OPT_WORKSPACE}" "${OPT_AGENT_EXPLICIT}"; fi
+
+	# Guard against running from an uninstalled source checkout where the
+	# version placeholder was never substituted. --prune uses $VERSION to decide
+	# which image to keep, so this must fire before the prune dispatch.
+	if [[ "$VERSION" == "@""VERSION""@" ]]; then
+		die "VERSION was not substituted at build time. Set AGENT_SANDBOX_VERSION or install via the official installer."
+	fi
+
 	if $OPT_PRUNE; then do_prune; fi
 
 	# ---------------------------------------------------------------------------
@@ -916,12 +988,9 @@ main() {
 	# Image management
 	# ---------------------------------------------------------------------------
 
-	IMAGE_HASH=$(compute_containerfile_hash)
-	IMAGE_TAG="agent-sandbox:${IMAGE_HASH}"
+	IMAGE_TAG="agent-sandbox:${VERSION}"
 
-	if $OPT_BUILD || ! image_exists "$IMAGE_HASH"; then
-		build_image "$IMAGE_HASH"
-	fi
+	ensure_image "$VERSION"
 
 	# ---------------------------------------------------------------------------
 	# Mount and environment assembly

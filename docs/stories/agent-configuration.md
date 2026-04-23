@@ -3,7 +3,7 @@
 ## Source
 PRD Capability Group: Agent Configuration
 Behaviors covered:
-- The host agent configs (`~/.config/opencode/` for OpenCode, `~/.claude/` for Claude Code) are available to the agent inside the sandbox.
+- The host agent configs (`~/.config/opencode/` for OpenCode) are available to the agent inside the sandbox.
 - Config changes made by the agent during a session do not persist back to the host.
 - The host git identity (`~/.gitconfig`) is available to the agent.
 - SSH operations use the host's SSH agent via socket forwarding; no private key material enters the container.
@@ -18,9 +18,8 @@ Stages host agent configs from read-only mount points to writable container-loca
 
 ### Config staging
 - [ ] If `~/.config/opencode/` exists on the host, it is mounted at `/host-config/opencode/` (read-only). If it does not exist, the mount is skipped and the entrypoint skips the copy step for OpenCode config.
-- [ ] If `~/.claude/` exists on the host, it is mounted at `/host-config/claude/` (read-only). If it does not exist, the mount is skipped and the entrypoint skips the copy step for Claude config.
-- [ ] `entrypoint.sh` runs in this order: (1) firewall, (2) copy `/host-config/opencode/` to `~/.config/opencode/` and `/host-config/claude/` to `~/.claude/` (skipping any that were not mounted), (3) apply permission overrides, (4) `rtk init`, (5) exec agent.
-- [ ] Config changes made inside the container (e.g. by `rtk init`) do not appear in the host's `~/.config/opencode/` or `~/.claude/` after the session ends.
+- [ ] `entrypoint.sh` runs in this order: (1) firewall, (2) chronyd, (3) su-exec drop to sandbox user, (4) copy `/host-config/opencode/` to `~/.config/opencode/` (skipping if not mounted), (5) append Nix instructions, (6) apply permission overrides, (7) `rtk init`, (8) exec agent.
+- [ ] Config changes made inside the container (e.g. by `rtk init`) do not appear in the host's `~/.config/opencode/` after the session ends.
 - [ ] `~/.gitconfig` is mounted from the host read-only at `/home/sandbox/.gitconfig`.
 
 ### SSH agent forwarding
@@ -35,10 +34,9 @@ Stages host agent configs from read-only mount points to writable container-loca
 - [ ] Environment variables not in the default list or `extra_vars` are never forwarded to the container, even if they match patterns like `*_API_KEY`.
 
 ### Permission overrides
-- [ ] After config staging, the entrypoint uses `jq` to set all permission fields (`bash`, `edit`, `read`, `grep`, `patch`, `webfetch`) to `"allow"` in `~/.config/opencode/config.json` inside the container.
-- [ ] If `~/.config/opencode/config.json` does not exist inside the container, the entrypoint creates it with only the permission override fields.
+- [ ] After config staging, the entrypoint uses `jq` to set all permission fields (`bash`, `edit`, `read`, `grep`, `patch`, `webfetch`) to `"allow"` in `~/.config/opencode/opencode.json` inside the container.
+- [ ] If `~/.config/opencode/opencode.json` does not exist inside the container, the entrypoint creates it with only the permission override fields.
 - [ ] If the file exists but has an unexpected structure (e.g., missing keys), the permission fields are added/overwritten without removing other content.
-- [ ] Claude Code is invoked with `--dangerously-skip-permissions`.
 - [ ] A host `opencode.json` that sets any permission to `"ask"` does not produce prompts inside the sandbox.
 
 ## Open Questions

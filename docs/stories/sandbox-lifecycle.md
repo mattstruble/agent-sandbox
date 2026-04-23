@@ -5,7 +5,7 @@ PRD Capability Group: Sandbox Lifecycle
 Behaviors covered:
 - Running `agent-sandbox` from a directory starts a sandboxed session with that directory as the workspace.
 - An explicit workspace path may be passed as an argument; if omitted, the current directory is used.
-- The active agent defaults to OpenCode; `--agent claude` selects Claude Code instead.
+- The active agent defaults to OpenCode; no other agents are supported in the current release.
 - Each session is identified by a name derived deterministically from the agent and the absolute workspace path — starting the same session twice does not create duplicate containers.
 - `--list` displays all currently running agent-sandbox containers.
 - `--stop` terminates sandbox(es) for the current (or specified) workspace.
@@ -19,7 +19,6 @@ Implements the core launcher CLI: argument parsing, container naming, start/stop
 ### Core lifecycle
 - [ ] `agent-sandbox` with no arguments starts a container using `$PWD` as the workspace and opencode as the agent.
 - [ ] `agent-sandbox ~/projects/foo` starts a container with `~/projects/foo` as the workspace.
-- [ ] `agent-sandbox --agent claude` starts a container using claude-code.
 - [ ] If the workspace path does not exist, the launcher exits with a non-zero code and a human-readable error before starting any container.
 - [ ] Container names match the pattern `agent-sandbox-<agent>-<workspace-basename>-<6-char-hash>` where the hash is derived from the absolute workspace path.
 - [ ] Running the same command twice from the same directory does not start a second container (the existing container is reused or the launcher detects it is already running).
@@ -29,8 +28,7 @@ Implements the core launcher CLI: argument parsing, container naming, start/stop
 
 ### List and stop
 - [ ] `agent-sandbox --list` prints the names and workspace paths of all running `agent-sandbox-*` containers.
-- [ ] `agent-sandbox --stop` stops all `agent-sandbox-*` containers for the current workspace (both agents if both are running).
-- [ ] `agent-sandbox --stop --agent claude` stops only the claude container for the current workspace.
+- [ ] `agent-sandbox --stop` stops all `agent-sandbox-*` containers for the current workspace.
 - [ ] `agent-sandbox --stop ~/projects/foo` stops all containers for that explicit path.
 - [ ] If no container is running for the targeted workspace (and agent, if specified), `--stop` exits 0 silently.
 
