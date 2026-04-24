@@ -274,7 +274,7 @@
 
             config = {
               Entrypoint = [ "/entrypoint.sh" ];
-              WorkingDir = "/workspace";
+              WorkingDir = "/home/sandbox";
               Env = [
                 "PATH=/home/sandbox/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 "SSL_CERT_FILE=${pkgsLinux.cacert}/etc/ssl/certs/ca-bundle.crt"

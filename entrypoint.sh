@@ -100,14 +100,14 @@ log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
 
-# Build the permission object. The sandbox is the security boundary, so we
-# replace the entire permission block rather than merging with user prefs.
-# - "*": "allow"              → auto-approve all tools (sandbox provides isolation)
-# - "doom_loop": "ask"        → protect against token-burning repeated calls
-# - "external_directory"      → deny access to paths outside the project (protects
-#                                mounted dotfiles like ~/.aws, ~/.gitconfig, auth.json)
-#                                with /tmp/* allowed for scratch space
-SANDBOX_PERMISSIONS='{"*":"allow","doom_loop":"ask","external_directory":{"*":"deny","/tmp/*":"allow"}}'
+# Read sandbox permissions from the image-baked default file (single source of
+# truth is flake.nix's opencodePermissionsFile derivation).
+if [[ -f /etc/agent-sandbox/opencode-permissions.json ]]; then
+	SANDBOX_PERMISSIONS=$(jq -c '.permission' /etc/agent-sandbox/opencode-permissions.json)
+else
+	warn "Default permissions file not found — using inline fallback."
+	SANDBOX_PERMISSIONS='{"*":"allow","doom_loop":"ask","external_directory":{"*":"deny","/tmp/*":"allow"}}'
+fi
 readonly SANDBOX_PERMISSIONS
 
 if [[ -f "$OPENCODE_CONFIG" ]]; then

@@ -240,9 +240,9 @@ _run_sandbox() {
 
 	local orig_fake_agent="$FAKE_AGENT"
 	FAKE_AGENT="$(_make_verify_agent '
-if [[ -f /workspace/host-file.txt ]]; then
+if [[ -f host-file.txt ]]; then
     echo "WORKSPACE_FILE_VISIBLE: yes"
-    cat /workspace/host-file.txt
+    cat host-file.txt
 else
     echo "WORKSPACE_FILE_VISIBLE: no"
     exit 1
@@ -267,7 +267,7 @@ exit 0')"
 @test "workspace mount: file written inside container appears on host filesystem" {
 	local orig_fake_agent="$FAKE_AGENT"
 	FAKE_AGENT="$(_make_verify_agent '
-echo "written-from-container" >/workspace/container-created-file.txt
+echo "written-from-container" >container-created-file.txt
 echo "CONTAINER_WRITE: done"
 exit 0')"
 
@@ -351,7 +351,7 @@ if [[ -f "${external_dir}/external-file.txt" ]]; then
     cat "${external_dir}/external-file.txt"
 else
     echo "SYMLINK_TARGET_VISIBLE: no"
-    ls -la /workspace/ >&2
+    ls -la . >&2
     exit 1
 fi
 exit 0
@@ -621,7 +621,7 @@ exit 0')"
 # ---------------------------------------------------------------------------
 
 # bats test_tags=e2e
-@test "workspace mount: /workspace is the working directory when the agent runs" {
+@test "workspace mount: workspace path is the working directory when the agent runs" {
 	local orig_fake_agent="$FAKE_AGENT"
 	FAKE_AGENT="$(_make_verify_agent 'echo "PWD_VALUE: $(pwd)"
 exit 0')"
@@ -632,5 +632,7 @@ exit 0')"
 	FAKE_AGENT="$orig_fake_agent"
 
 	assert_success
-	assert_output --partial "PWD_VALUE: /workspace"
+	local resolved_ws
+	resolved_ws=$(portable_realpath "$WORKSPACE_DIR")
+	assert_output --partial "PWD_VALUE: ${resolved_ws}"
 }
