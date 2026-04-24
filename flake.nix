@@ -115,11 +115,12 @@
           opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" (
             builtins.toJSON {
               permission = {
-                bash = "allow";
-                edit = "allow";
-                read = "allow";
-                grep = "allow";
-                webfetch = "allow";
+                "*" = "allow";
+                doom_loop = "ask";
+                external_directory = {
+                  "*" = "deny";
+                  "/tmp/*" = "allow";
+                };
               };
             }
           );
