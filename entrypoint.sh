@@ -100,22 +100,23 @@ log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
 
+# Build the permission object. The sandbox is the security boundary, so we
+# replace the entire permission block rather than merging with user prefs.
+# - "*": "allow"              → auto-approve all tools (sandbox provides isolation)
+# - "doom_loop": "ask"        → protect against token-burning repeated calls
+# - "external_directory"      → deny access to paths outside the project (protects
+#                                mounted dotfiles like ~/.aws, ~/.gitconfig, auth.json)
+#                                with /tmp/* allowed for scratch space
+SANDBOX_PERMISSIONS='{"*":"allow","doom_loop":"ask","external_directory":{"*":"deny","/tmp/*":"allow"}}'
+readonly SANDBOX_PERMISSIONS
+
 if [[ -f "$OPENCODE_CONFIG" ]]; then
-	# File exists — merge permission fields without removing other content.
-	# Use a flag to skip the jq/mv block if mktemp fails; `return` is not valid
-	# at top-level script scope (entrypoint.sh is executed, not sourced).
 	tmp=""
 	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") || {
 		warn "mktemp failed — continuing without permission overrides."
 	}
 	if [[ -n "$tmp" ]]; then
-		if jq '
-    .permission.bash     = "allow" |
-    .permission.edit     = "allow" |
-    .permission.read     = "allow" |
-    .permission.grep     = "allow" |
-    .permission.webfetch = "allow"
-  ' "$OPENCODE_CONFIG" >"$tmp"; then
+		if jq --argjson perms "$SANDBOX_PERMISSIONS" '.permission = $perms' "$OPENCODE_CONFIG" >"$tmp"; then
 			if mv -f "$tmp" "$OPENCODE_CONFIG"; then
 				log "Permission overrides applied."
 			else
@@ -128,23 +129,12 @@ if [[ -f "$OPENCODE_CONFIG" ]]; then
 		fi
 	fi
 else
-	# File does not exist — copy default from static file
 	if [[ -f /etc/agent-sandbox/opencode-permissions.json ]]; then
 		cp /etc/agent-sandbox/opencode-permissions.json "$OPENCODE_CONFIG"
 		log "Created $OPENCODE_CONFIG from default permissions."
 	else
 		warn "Default permissions file not found — creating inline fallback."
-		cat >"$OPENCODE_CONFIG" <<'EOF'
-{
-  "permission": {
-    "bash": "allow",
-    "edit": "allow",
-    "read": "allow",
-    "grep": "allow",
-    "webfetch": "allow"
-  }
-}
-EOF
+		printf '{"permission":%s}\n' "$SANDBOX_PERMISSIONS" >"$OPENCODE_CONFIG"
 		log "Created $OPENCODE_CONFIG with permission overrides."
 	fi
 fi

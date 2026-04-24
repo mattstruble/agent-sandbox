@@ -305,14 +305,12 @@ _run_in_sandbox() {
 
 # bats test_tags=integration
 @test "static files: /etc/agent-sandbox/opencode-permissions.json is valid JSON" {
-    # Validates that the permissions file embedded in the image is well-formed JSON.
-    # jq exits non-zero and prints an error if the input is not valid JSON.
     run "$RUNTIME" run --rm --entrypoint bash "$IMAGE" \
         -c 'jq . < /etc/agent-sandbox/opencode-permissions.json'
     assert_success
-    # Verify the expected structure is present (not just syntactically valid)
     assert_output --partial '"permission"'
-    assert_output --partial '"bash"'
+    assert_output --partial '"doom_loop"'
+    assert_output --partial '"external_directory"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -575,9 +573,9 @@ _run_in_sandbox() {
         -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
-    assert_output --partial '"bash": "allow"'
-    assert_output --partial '"edit": "allow"'
-    assert_output --partial '"webfetch": "allow"'
+    assert_output --partial '"*": "allow"'
+    assert_output --partial '"doom_loop": "ask"'
+    assert_output --partial '"external_directory"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -655,12 +653,13 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "config staging: opencode host config is staged and permission overrides are merged" {
+@test "config staging: opencode host config is staged and permission overrides replace user prefs" {
     # Mount a fake opencode config at /host-config/opencode.
-    # The entrypoint copies it to ~/.config/opencode, then jq-merges permission overrides.
-    # The fake agent reads the resulting config to verify both staging and merging worked.
+    # The entrypoint copies it to ~/.config/opencode, then replaces the entire
+    # permission block with sandbox overrides. The fake agent reads the resulting
+    # config to verify both staging and full permission replacement worked.
     _TEST_HOST_CONFIG_DIR=$(make_tempdir)
-    printf '{"model": "test-model"}\n' > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
+    printf '{"model": "test-model", "permission": {"bash": "deny"}}\n' > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
 
     _TEST_WORKSPACE=$(make_tempdir)
     _TEST_AGENT=$(make_temp)
@@ -694,7 +693,11 @@ _run_in_sandbox() {
         -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
-    # Verify permission overrides were applied and the staged model value was preserved.
-    assert_output --partial '"bash": "allow"'
+    # Non-permission config is preserved
     assert_output --partial '"model": "test-model"'
+    # Permission block is fully replaced
+    assert_output --partial '"*": "allow"'
+    assert_output --partial '"doom_loop": "ask"'
+    # User's deny should NOT appear — sandbox overrides everything
+    refute_output --partial '"bash": "deny"'
 }
