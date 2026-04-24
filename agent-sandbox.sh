@@ -817,6 +817,18 @@ assemble_mount_flags() {
 		MOUNT_FLAGS+=("-v" "${HOME}/.gitconfig:/home/sandbox/.gitconfig:ro${MOUNT_Z}")
 	fi
 
+	# OpenCode session data (rw, create if absent)
+	# OpenCode stores sessions, logs, and project data at ~/.local/share/opencode/.
+	# Mounting this from the host enables session persistence across sandbox runs
+	# and session sharing with host-side OpenCode (project ID is git-root-commit
+	# based, so paths don't need to match for git repos).
+	_opencode_data="${HOME}/.local/share/opencode"
+	if [[ ! -d "$_opencode_data" ]]; then
+		mkdir -p "$_opencode_data"
+		log "Created ${_opencode_data} for session persistence"
+	fi
+	MOUNT_FLAGS+=("-v" "${_opencode_data}:/home/sandbox/.local/share/opencode:rw${MOUNT_Z}")
+
 	# Stage host config directories with resolved symlinks.
 	# The container cannot follow symlinks that point outside the mount (e.g. Nix
 	# store paths). Staging resolves them on the host where targets are accessible.
