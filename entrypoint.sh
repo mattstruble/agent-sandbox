@@ -161,7 +161,10 @@ fi
 
 # ─── Step 8: Exec the agent ───────────────────────────────────────────────────
 
-cd /workspace || die "/workspace is not accessible — check that the workspace mount succeeded."
+if [[ -z "${SANDBOX_WORKSPACE:-}" ]]; then
+	die "SANDBOX_WORKSPACE environment variable is not set."
+fi
+cd "$SANDBOX_WORKSPACE" || die "'$SANDBOX_WORKSPACE' is not accessible — check that the workspace mount succeeded."
 
 if ! command -v opencode &>/dev/null; then
 	die "opencode binary not found in PATH"

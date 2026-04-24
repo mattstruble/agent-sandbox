@@ -232,7 +232,8 @@ _run_in_sandbox() {
         --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
-        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}:rw" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
         "$IMAGE"
     assert_success
@@ -279,7 +280,8 @@ _run_in_sandbox() {
         -e AGENT=opencode \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace:rw" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}:rw" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
     # The existing content and the Nix instructions must be on separate lines.
@@ -492,7 +494,8 @@ _run_in_sandbox() {
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
     assert_output --partial "FAKE_AGENT_MARKER"
@@ -568,7 +571,8 @@ _run_in_sandbox() {
         --security-opt=no-new-privileges \
         -e AGENT=opencode \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
     assert_output --partial '"bash": "allow"'
@@ -643,7 +647,8 @@ _run_in_sandbox() {
         -e AGENT=opencode \
         -e TEST_INTEGRATION_VAR=hello-from-host \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
     assert_output --partial "ENV_VAR_VALUE=hello-from-host"
@@ -685,7 +690,8 @@ _run_in_sandbox() {
         -e AGENT=opencode \
         -v "${_TEST_AGENT}:${opencode_path}:ro" \
         -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
-        -v "${_TEST_WORKSPACE}:/workspace" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
     # Verify permission overrides were applied and the staged model value was preserved.
