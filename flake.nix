@@ -227,10 +227,6 @@
               mkdir -p nix
               chown 1000:1000 nix
 
-              # ── /workspace working directory ─────────────────────────────────────
-              mkdir -p workspace
-              chown 1000:1000 workspace
-
               # ── Nix configuration ────────────────────────────────────────────────
               mkdir -p etc/nix
               chmod 0555 etc/nix
@@ -257,6 +253,9 @@
               # ── bashrc with command-not-found handler ────────────────────────────
               cp ${sandboxBashrcFile} home/sandbox/.bashrc
               chown 1000:1000 home/sandbox/.bashrc
+
+              mkdir -p home/sandbox/.local
+              chown 1000:1000 home/sandbox/.local
 
               # ── Entrypoint and firewall scripts ──────────────────────────────────
               cp ${./entrypoint.sh} entrypoint.sh
