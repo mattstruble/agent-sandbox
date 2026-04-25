@@ -7,7 +7,7 @@
 
 `agent-sandbox` is a Nix flake that packages a bash launcher wrapping Podman to run AI coding agents (OpenCode) in isolated containers. Each sandbox provides:
 
-- The current directory (or an explicit path) mounted as `/workspace`
+- The current directory (or an explicit path) mounted at its full host path
 - Agent dotfiles and git config staged from the host then made writable inside the container
 - `rtk` pre-configured for 60-90% token savings on every tool call
 - SSH credentials forwarded via socket — no private keys enter the container
@@ -175,7 +175,8 @@ Host agent config directories are **staged** at read-only mount points rather th
 
 | Host source | Container mount point | Mode |
 |---|---|---|
-| `<workspace>` | `/workspace` | `rw,z` |
+| `<workspace>` | `<workspace>` (full host path) | `rw,z` |
+| `~/.local/share/opencode` | `/home/sandbox/.local/share/opencode` | `rw,z` |
 | `~/.gitconfig` | `/home/sandbox/.gitconfig` | `ro,z` |
 | `~/.config/opencode/` | `/host-config/opencode/` | `ro,z` (if exists on host) |
 | `$SSH_AUTH_SOCK` | `/tmp/ssh_auth_sock` | `ro,z` (unless `--no-ssh`) |
@@ -219,9 +220,9 @@ Runs inside the container in this order:
 3. Drop to the `sandbox` user via `su-exec`; steps 4–8 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 5. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md`; create file if absent
-6. Apply permission overrides: use `jq` to set all permission fields to `"allow"` in `~/.config/opencode/opencode.json`; if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
+6. Apply permission overrides: use `jq` to replace the entire `.permission` object with sandbox defaults (`"*": "allow"`, `"doom_loop": "ask"`, `"external_directory": {"*": "deny", "/tmp/*": "allow"}`); if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
 7. Run `rtk init -g --opencode`
-8. `exec opencode` with `/workspace` as working directory
+8. `exec opencode` with `$SANDBOX_WORKSPACE` as working directory
 
 The firewall runs first to eliminate any unprotected network window. `rtk init` is a local-only operation and runs safely behind the established firewall.
 

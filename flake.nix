@@ -35,16 +35,11 @@
           version = "0.1.0"; # x-release-please-version
 
           # Linux nixpkgs instance — used for all container image contents.
-          # On Linux, linuxSystem == system but pkgsLinux is a separate import
-          # with allowUnfree = true (pkgs does not enable unfree). On darwin it
-          # also targets the corresponding Linux arch so the build is delegated
-          # to a Linux builder.
-          # allowUnfree is required for opencode and rtk (lib.licenses.unfree).
+          # On Linux, linuxSystem == system; on darwin it targets the
+          # corresponding Linux arch so the build is delegated to a Linux
+          # builder.
           linuxSystem = builtins.replaceStrings [ "-darwin" ] [ "-linux" ] system;
-          pkgsLinux = import nixpkgs {
-            system = linuxSystem;
-            config.allowUnfree = true;
-          };
+          pkgsLinux = import nixpkgs { system = linuxSystem; };
 
           # Runtime dependencies available to the launcher at runtime.
           # podman is included on Linux only — on macOS, users install Podman via
@@ -120,11 +115,12 @@
           opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" (
             builtins.toJSON {
               permission = {
-                bash = "allow";
-                edit = "allow";
-                read = "allow";
-                grep = "allow";
-                webfetch = "allow";
+                "*" = "allow";
+                doom_loop = "ask";
+                external_directory = {
+                  "*" = "deny";
+                  "/tmp/*" = "allow";
+                };
               };
             }
           );
@@ -173,17 +169,11 @@
             in
             components.nix-cli;
 
-          # Container image contents — built entirely via pkgsLinux so the
-          # derivation targets Linux regardless of the host system.
-          # Defined before linuxPackages so linuxPackages can reference them
-          # directly rather than calling callPackage a second time.
-          opencode = pkgsLinux.callPackage ./packages/opencode.nix { };
-          rtk = pkgsLinux.callPackage ./packages/rtk.nix { };
-
           # Linux-only packages exposed as top-level outputs on Linux systems.
-          # References the standalone opencode/rtk bindings above so both the
-          # image contents and the top-level outputs share the same derivation.
-          linuxPackages = lib.optionalAttrs pkgs.stdenv.isLinux { inherit opencode rtk; };
+          linuxPackages = lib.optionalAttrs pkgs.stdenv.isLinux {
+            opencode = pkgsLinux.opencode;
+            rtk = pkgsLinux.rtk;
+          };
 
           containerImage = pkgsLinux.dockerTools.buildLayeredImage {
             name = "agent-sandbox";
@@ -212,8 +202,8 @@
               pkgsLinux.gh
               pkgsLinux.uv
               nixMinimal
-              opencode
-              rtk
+              pkgsLinux.opencode
+              pkgsLinux.rtk
               pkgsLinux.dockerTools.caCertificates
               pkgsLinux.dockerTools.usrBinEnv
             ];
@@ -279,24 +269,6 @@
               chown 1000:1000 var/lib/chrony
               mkdir -p tmp
               chmod 1777 tmp
-
-              # ── Dynamic linker for unpatched binaries ────────────────────────────
-              # opencode is a Bun-compiled binary that cannot be patched with
-              # autoPatchelfHook (patching breaks embedded JS sentinel detection).
-              # Provide the conventional dynamic linker path as a symlink to the
-              # Nix store glibc so the kernel can load the unpatched binary.
-              ${
-                if linuxSystem == "aarch64-linux" then
-                  ''
-                    mkdir -p lib
-                    ln -sf ${pkgsLinux.glibc}/lib/ld-linux-aarch64.so.1 lib/ld-linux-aarch64.so.1
-                  ''
-                else
-                  ''
-                    mkdir -p lib64
-                    ln -sf ${pkgsLinux.glibc}/lib/ld-linux-x86-64.so.2 lib64/ld-linux-x86-64.so.2
-                  ''
-              }
             '';
 
             enableFakechroot = true;
@@ -312,7 +284,6 @@
                 "RTK_TELEMETRY_DISABLED=1"
                 "HOME=/home/sandbox"
                 "NIX_CONF_DIR=/etc/nix"
-                "LD_LIBRARY_PATH=${pkgsLinux.glibc}/lib"
               ];
               Labels = {
                 "org.opencontainers.image.title" = "agent-sandbox";

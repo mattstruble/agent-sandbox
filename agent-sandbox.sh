@@ -710,7 +710,7 @@ collect_symlink_mounts() {
 		# Skip if target is not a directory
 		[[ -d "$target" ]] || continue
 
-		# Skip if target is within the workspace (already accessible via /workspace)
+		# Skip if target is within the workspace (already accessible via the workspace mount)
 		# Exact match covers the workspace root itself (glob requires a trailing slash)
 		if [[ "$target" == "$WORKSPACE"/* || "$target" == "$WORKSPACE" ]]; then
 			continue
@@ -809,13 +809,27 @@ collect_extra_mounts() {
 assemble_mount_flags() {
 	MOUNT_FLAGS=()
 
-	# Workspace mount (always rw)
-	MOUNT_FLAGS+=("-v" "${WORKSPACE}:/workspace:rw${MOUNT_Z}")
+	# Mount workspace at its full host path inside the container. This ensures
+	# OpenCode's project directory matches the host path, enabling session sharing
+	# for non-git directories (where project ID falls back to path-based lookup).
+	MOUNT_FLAGS+=("-v" "${WORKSPACE}:${WORKSPACE}:rw${MOUNT_Z}")
 
 	# Git config (ro, only if exists)
 	if [[ -f "${HOME}/.gitconfig" ]]; then
 		MOUNT_FLAGS+=("-v" "${HOME}/.gitconfig:/home/sandbox/.gitconfig:ro${MOUNT_Z}")
 	fi
+
+	# OpenCode session data (rw, create if absent)
+	# OpenCode stores sessions, logs, and project data at ~/.local/share/opencode/.
+	# Mounting this from the host enables session persistence across sandbox runs
+	# and session sharing with host-side OpenCode (project ID is git-root-commit
+	# based, so paths don't need to match for git repos).
+	_opencode_data="${HOME}/.local/share/opencode"
+	if [[ ! -d "$_opencode_data" ]]; then
+		mkdir -p "$_opencode_data"
+		log "Created ${_opencode_data} for session persistence"
+	fi
+	MOUNT_FLAGS+=("-v" "${_opencode_data}:/home/sandbox/.local/share/opencode:rw${MOUNT_Z}")
 
 	# Stage host config directories with resolved symlinks.
 	# The container cannot follow symlinks that point outside the mount (e.g. Nix
@@ -913,6 +927,9 @@ assemble_env_flags() {
 
 	# Always set AGENT
 	ENV_FLAGS+=("-e" "AGENT=${OPT_AGENT}")
+
+	# Workspace path for entrypoint (host path used as container mount point)
+	ENV_FLAGS+=("-e" "SANDBOX_WORKSPACE=${WORKSPACE}")
 
 	# SSH_AUTH_SOCK inside container
 	if $SSH_FORWARDED; then
