@@ -2077,3 +2077,411 @@ echo 'installer ran'
     assert_equal "$RUNTIME" "docker"
 }
 
+# ---------------------------------------------------------------------------
+# 15. do_list() Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "do_list: calls runtime ps with name filter and table format" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+subcmd="$1"
+case "$subcmd" in
+    ps)
+        echo "agent-sandbox-opencode-myproject-abc123"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_list
+
+    assert_success
+    assert_output --partial "agent-sandbox-opencode-myproject-abc123"
+    # Verify ps was called with the name filter and table format
+    local calls_log="${_TEST_TMPDIR}/calls.log"
+    run grep "name=agent-sandbox-" "$calls_log"
+    assert_success
+    run grep -- "--format" "$calls_log"
+    assert_success
+}
+
+# bats test_tags=unit
+@test "do_list: exits 0 even when no containers are running" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+subcmd="$1"
+case "$subcmd" in
+    ps)
+        # Return empty output — no containers running
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_list
+
+    assert_success
+}
+
+# ---------------------------------------------------------------------------
+# 16. do_stop() Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "do_stop: stops specific container when agent is provided" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local ws_dir="$_TEST_TMPDIR2"
+
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+exit 0
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_stop "$ws_dir" "opencode"
+
+    assert_success
+    assert_output --partial "Stopped container:"
+    # Verify stop was called with a container name matching the expected pattern
+    assert [ -f "${_TEST_TMPDIR}/calls.log" ]
+    run grep "stop" "${_TEST_TMPDIR}/calls.log"
+    assert_success
+    run grep "agent-sandbox-opencode-" "${_TEST_TMPDIR}/calls.log"
+    assert_success
+}
+
+# bats test_tags=unit
+@test "do_stop: stops all workspace containers when no agent is provided" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local ws_dir="$_TEST_TMPDIR2"
+
+    # Pre-compute the expected container name so the fake runtime can return it
+    local resolved_ws
+    resolved_ws=$(portable_realpath "$ws_dir")
+    local expected_name
+    expected_name=$(compute_container_name "opencode" "$resolved_ws")
+
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<RTEOF
+#!/usr/bin/env bash
+echo "\$@" >> "\${0%/*}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    ps)
+        echo "${expected_name}"
+        exit 0
+        ;;
+    stop)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_stop "$ws_dir"
+
+    assert_success
+    assert_output --partial "Stopping container:"
+}
+
+# bats test_tags=unit
+@test "do_stop: exits 0 when no matching containers found" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local ws_dir="$_TEST_TMPDIR2"
+
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+subcmd="$1"
+case "$subcmd" in
+    ps)
+        # Return empty — no containers running
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_stop "$ws_dir"
+
+    assert_success
+}
+
+# ---------------------------------------------------------------------------
+# 17. do_prune() Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "do_prune: removes old images and keeps current version" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    # Use an unquoted heredoc so $VERSION expands
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<RTEOF
+#!/usr/bin/env bash
+echo "\$@" >> "\${0%/*}/calls.log"
+subcmd="\$1"
+case "\$subcmd" in
+    images)
+        printf 'agent-sandbox:${VERSION}\nagent-sandbox:0.0.1-old\nagent-sandbox:0.0.2-old\n'
+        exit 0
+        ;;
+    rmi)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_prune
+
+    assert_success
+    assert_output --partial "Keeping current image: agent-sandbox:${VERSION}"
+    assert_output --partial "Removing old image: agent-sandbox:0.0.1-old"
+    assert_output --partial "Pruned 2 old image(s)"
+}
+
+# bats test_tags=unit
+@test "do_prune: exits 0 with message when no images found" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+subcmd="$1"
+case "$subcmd" in
+    images)
+        # Return empty — no agent-sandbox images
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_prune
+
+    assert_success
+    assert_output --partial "No agent-sandbox images found"
+}
+
+# bats test_tags=unit
+@test "do_prune: warns but continues when rmi fails for one image" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    cat > "${_TEST_TMPDIR}/fake-runtime" <<'RTEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${0%/*}/calls.log"
+subcmd="$1"
+case "$subcmd" in
+    images)
+        echo "agent-sandbox:0.0.1-old"
+        exit 0
+        ;;
+    rmi)
+        # Simulate rmi failure
+        exit 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+RTEOF
+    chmod +x "${_TEST_TMPDIR}/fake-runtime"
+    RUNTIME="${_TEST_TMPDIR}/fake-runtime"
+
+    run do_prune
+
+    assert_success
+    assert_output --partial "Failed to remove"
+    assert_output --partial "Pruned 0 old image(s)"
+}
+
+# ---------------------------------------------------------------------------
+# 18. assemble_mount_flags() Tests
+# ---------------------------------------------------------------------------
+
+# bats test_tags=unit
+@test "assemble_mount_flags: always includes workspace mount as first entry" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    unset SSH_AUTH_SOCK 2>/dev/null || true
+
+    assemble_mount_flags
+
+    assert_equal "${MOUNT_FLAGS[0]}" "-v"
+    # Second element should be the workspace path with :rw
+    local found_ws=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *"${WORKSPACE}"*":rw"* ]]; then
+            found_ws=true
+            break
+        fi
+    done
+    assert_equal "$found_ws" true
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: mounts gitconfig when it exists" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    unset SSH_AUTH_SOCK 2>/dev/null || true
+
+    # Create a .gitconfig in the temp HOME
+    echo "[user]" > "${HOME}/.gitconfig"
+    echo "  name = Test User" >> "${HOME}/.gitconfig"
+
+    assemble_mount_flags
+
+    # Check MOUNT_FLAGS contains a .gitconfig mount
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *".gitconfig:/home/sandbox/.gitconfig:ro"* ]]; then
+            found=true
+            break
+        fi
+    done
+    assert_equal "$found" true
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: skips gitconfig when it does not exist" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    unset SSH_AUTH_SOCK 2>/dev/null || true
+
+    # Ensure no .gitconfig exists in the temp HOME
+    rm -f "${HOME}/.gitconfig"
+
+    assemble_mount_flags
+
+    # Check MOUNT_FLAGS does NOT contain any .gitconfig reference
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *".gitconfig"* ]]; then
+            found=true
+            break
+        fi
+    done
+    assert_equal "$found" false
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: creates opencode data directory if absent" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    unset SSH_AUTH_SOCK 2>/dev/null || true
+
+    # Ensure the opencode data dir does not exist
+    rm -rf "${HOME}/.local/share/opencode"
+
+    assemble_mount_flags
+
+    assert [ -d "${HOME}/.local/share/opencode" ]
+    # Check MOUNT_FLAGS contains the opencode data mount
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *"opencode:/home/sandbox/.local/share/opencode:rw"* ]]; then
+            found=true
+            break
+        fi
+    done
+    assert_equal "$found" true
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: sets SSH_FORWARDED=false when OPT_NO_SSH=true" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    # Set SSH_AUTH_SOCK to a value to confirm OPT_NO_SSH overrides it
+    export SSH_AUTH_SOCK="/tmp/ssh-test-sock-$$"
+
+    assemble_mount_flags
+
+    assert_equal "$SSH_FORWARDED" "false"
+    unset SSH_AUTH_SOCK
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: stages opencode config from host when config dir exists" {
+    _TEST_TMPDIR="$(mktemp -d)"
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=true
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    unset SSH_AUTH_SOCK 2>/dev/null || true
+
+    # Create the opencode config directory with a file
+    mkdir -p "${HOME}/.config/opencode"
+    echo '{"theme": "dark"}' > "${HOME}/.config/opencode/opencode.json"
+
+    assemble_mount_flags
+
+    # Check MOUNT_FLAGS contains the staged config mount at /host-config/opencode/
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *"/host-config/opencode/:ro"* ]]; then
+            found=true
+            break
+        fi
+    done
+    assert_equal "$found" true
+}
+
