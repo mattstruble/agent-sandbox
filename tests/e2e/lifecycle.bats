@@ -636,3 +636,82 @@ exit 0')"
 	resolved_ws=$(portable_realpath "$WORKSPACE_DIR")
 	assert_output --partial "PWD_VALUE: ${resolved_ws}"
 }
+
+# ---------------------------------------------------------------------------
+# Test 14: Agent exits with non-zero — container propagates exit code
+# ---------------------------------------------------------------------------
+
+# bats test_tags=e2e
+@test "error handling: non-zero agent exit code propagates to container exit" {
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$(_make_verify_agent '
+echo "AGENT_FAILING"
+exit 42')"
+
+	_precompute_container_name --no-ssh "$WORKSPACE_DIR"
+	run _run_sandbox --no-ssh "$WORKSPACE_DIR"
+
+	FAKE_AGENT="$orig_fake_agent"
+
+	assert_failure
+	assert [ "$status" -eq 42 ]
+	assert_output --partial "AGENT_FAILING"
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Non-existent workspace path fails
+# ---------------------------------------------------------------------------
+
+# bats test_tags=e2e
+@test "error handling: non-existent workspace path fails with clear error" {
+	# No _precompute_container_name: resolve_workspace dies before any container starts
+	run _run_sandbox --no-ssh "/nonexistent/path/that/does/not/exist"
+
+	assert_failure
+	assert_output --partial "does not exist or is not a directory"
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: Writing to default (read-only) extra mount fails
+# ---------------------------------------------------------------------------
+
+# bats test_tags=e2e
+@test "extra mount: writing to default (read-only) extra mount fails" {
+	local extra_dir
+	extra_dir="$(make_tempdir)"
+	extra_dir="$(portable_realpath "$extra_dir")"
+	TEST_TMPDIRS+=("$extra_dir")
+	echo "original" >"${extra_dir}/readonly-file.txt"
+
+	local verify_agent
+	verify_agent="$(make_temp)"
+	TEST_TMPFILES+=("$verify_agent")
+	chmod 700 "$verify_agent"
+	cat >"$verify_agent" <<AGENT
+#!/usr/bin/env bash
+# Attempt to write to the read-only mount
+if echo "modified" >> "${extra_dir}/readonly-file.txt" 2>/dev/null; then
+    echo "WRITE_SUCCEEDED"
+    exit 1
+else
+    echo "WRITE_BLOCKED"
+fi
+exit 0
+AGENT
+
+	local orig_fake_agent="$FAKE_AGENT"
+	FAKE_AGENT="$verify_agent"
+
+	_precompute_container_name --no-ssh --mount "$extra_dir" "$WORKSPACE_DIR"
+	run _run_sandbox --no-ssh --mount "$extra_dir" "$WORKSPACE_DIR"
+
+	FAKE_AGENT="$orig_fake_agent"
+
+	assert_success
+	assert_output --partial "WRITE_BLOCKED"
+
+	# Verify the host file was not modified (guards against runtimes that buffer
+	# writes without immediately returning an error from the append)
+	run cat "${extra_dir}/readonly-file.txt"
+	assert_output "original"
+}
