@@ -53,6 +53,20 @@ teardown() {
     if [[ -n "${_TEST_TMPDIR2:-}" && "$_TEST_TMPDIR2" != "/" ]]; then
         rm -rf "$_TEST_TMPDIR2"
     fi
+    if [[ -n "${_FAKE_RUNTIME_DIR:-}" && "$_FAKE_RUNTIME_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_RUNTIME_DIR"
+    fi
+    if [[ -n "${_FAKE_UPDATE_DIR:-}" && "$_FAKE_UPDATE_DIR" != "/" ]]; then
+        rm -rf "$_FAKE_UPDATE_DIR"
+    fi
+    # Clear tracked variables so stale values don't carry across tests
+    _TEST_HOME=""
+    _SYMLINK_WS=""
+    _EXTERNAL_DIR=""
+    _TEST_TMPDIR=""
+    _TEST_TMPDIR2=""
+    _FAKE_RUNTIME_DIR=""
+    _FAKE_UPDATE_DIR=""
 }
 
 # ---------------------------------------------------------------------------
@@ -769,10 +783,12 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
 
     assemble_env_flags
 
     assert_env_flag "AGENT=opencode"
+    assert_env_flag "SANDBOX_WORKSPACE=/tmp/test-workspace"
 }
 
 # bats test_tags=unit
@@ -781,6 +797,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
     export ANTHROPIC_API_KEY="test-key-value"
     unset OPENAI_API_KEY 2>/dev/null || true
 
@@ -798,6 +815,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
     unset ANTHROPIC_API_KEY  2>/dev/null || true
     unset OPENAI_API_KEY     2>/dev/null || true
     unset OPENROUTER_API_KEY 2>/dev/null || true
@@ -825,6 +843,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=("MY_CUSTOM_VAR")
+    WORKSPACE="/tmp/test-workspace"
     export MY_CUSTOM_VAR="custom-value"
 
     assemble_env_flags
@@ -840,6 +859,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=("MY_UNSET_VAR")
+    WORKSPACE="/tmp/test-workspace"
     unset MY_UNSET_VAR 2>/dev/null || true
 
     assemble_env_flags
@@ -853,6 +873,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=true
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
 
     assemble_env_flags
 
@@ -865,6 +886,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
 
     assemble_env_flags
 
@@ -877,6 +899,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=true
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
 
     assemble_env_flags
 
@@ -889,6 +912,7 @@ _setup_symlink_workspace() {
     OPT_NO_SSH=false
     SSH_FORWARDED=false
     CFG_EXTRA_VARS=()
+    WORKSPACE="/tmp/test-workspace"
 
     assemble_env_flags
 
@@ -1221,18 +1245,18 @@ EOF
 
     _teardown_fake_runtime
 
-    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
-    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+    assert_equal "$load_called" "false"
+    assert_equal "$pull_called" "false"
 }
 
 # bats test_tags=unit
 @test "ensure_image: calls load_image when AGENT_SANDBOX_IMAGE_PATH is set and image absent" {
     _setup_fake_runtime_image_absent
 
-    local tarball
-    tarball="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$tarball'" EXIT
+    # Create tarball in _TEST_TMPDIR2 so teardown handles cleanup
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local tarball="${_TEST_TMPDIR2}/fake-image.tar"
+    touch "$tarball"
 
     export AGENT_SANDBOX_IMAGE_PATH="$tarball"
     OPT_PULL=false
@@ -1244,13 +1268,11 @@ EOF
 
     ensure_image "$VERSION"
 
-    rm -f "$tarball"
-    trap - EXIT
     _teardown_fake_runtime
     unset AGENT_SANDBOX_IMAGE_PATH
 
-    [[ "$load_called" == true  ]] || fail "expected load_called=true, got '$load_called'"
-    [[ "$pull_called" == false ]] || fail "expected pull_called=false, got '$pull_called'"
+    assert_equal "$load_called" "true"
+    assert_equal "$pull_called" "false"
 }
 
 # bats test_tags=unit
@@ -1269,8 +1291,8 @@ EOF
 
     _teardown_fake_runtime
 
-    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
-    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+    assert_equal "$load_called" "false"
+    assert_equal "$pull_called" "true"
 }
 
 # bats test_tags=unit
@@ -1290,18 +1312,18 @@ EOF
     _teardown_fake_runtime
     unset AGENT_SANDBOX_IMAGE_PATH
 
-    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
-    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+    assert_equal "$load_called" "false"
+    assert_equal "$pull_called" "true"
 }
 
 # bats test_tags=unit
 @test "ensure_image: --pull forces pull_image even when AGENT_SANDBOX_IMAGE_PATH is set" {
     _setup_fake_runtime_image_absent
 
-    local tarball
-    tarball="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$tarball'" EXIT
+    # Create tarball in _TEST_TMPDIR2 so teardown handles cleanup
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local tarball="${_TEST_TMPDIR2}/fake-image.tar"
+    touch "$tarball"
 
     export AGENT_SANDBOX_IMAGE_PATH="$tarball"
     OPT_PULL=true
@@ -1313,13 +1335,11 @@ EOF
 
     ensure_image "$VERSION"
 
-    rm -f "$tarball"
-    trap - EXIT
     _teardown_fake_runtime
     unset AGENT_SANDBOX_IMAGE_PATH
 
-    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
-    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+    assert_equal "$load_called" "false"
+    assert_equal "$pull_called" "true"
 }
 
 # bats test_tags=unit
@@ -1338,8 +1358,8 @@ EOF
 
     _teardown_fake_runtime
 
-    [[ "$load_called" == false ]] || fail "expected load_called=false, got '$load_called'"
-    [[ "$pull_called" == true  ]] || fail "expected pull_called=true, got '$pull_called'"
+    assert_equal "$load_called" "false"
+    assert_equal "$pull_called" "true"
 }
 
 # ---------------------------------------------------------------------------
@@ -1953,10 +1973,8 @@ echo 'installer ran'
 # bats test_tags=unit
 @test "detect_runtime: AGENT_SANDBOX_RUNTIME=docker uses docker even when podman exists" {
     # Create fake podman and docker in a temp dir
-    local fake_bin
-    fake_bin="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$fake_bin'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local fake_bin="$_TEST_TMPDIR"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
     chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
@@ -1969,18 +1987,14 @@ echo 'installer ran'
 
     export PATH="$old_path"
     unset AGENT_SANDBOX_RUNTIME
-    rm -rf "$fake_bin"
-    trap - EXIT
 
     assert_equal "$RUNTIME" "docker"
 }
 
 # bats test_tags=unit
 @test "detect_runtime: AGENT_SANDBOX_RUNTIME=podman uses podman" {
-    local fake_bin
-    fake_bin="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$fake_bin'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local fake_bin="$_TEST_TMPDIR"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
     chmod +x "${fake_bin}/podman"
 
@@ -1992,8 +2006,6 @@ echo 'installer ran'
 
     export PATH="$old_path"
     unset AGENT_SANDBOX_RUNTIME
-    rm -rf "$fake_bin"
-    trap - EXIT
 
     assert_equal "$RUNTIME" "podman"
 }
@@ -2012,10 +2024,8 @@ echo 'installer ran'
 
 # bats test_tags=unit
 @test "detect_runtime: when both podman and docker exist, podman is preferred" {
-    local fake_bin
-    fake_bin="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$fake_bin'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local fake_bin="$_TEST_TMPDIR"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/podman"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
     chmod +x "${fake_bin}/podman" "${fake_bin}/docker"
@@ -2028,8 +2038,6 @@ echo 'installer ran'
     detect_runtime
 
     export PATH="$old_path"
-    rm -rf "$fake_bin"
-    trap - EXIT
 
     assert_equal "$RUNTIME" "podman"
 }
@@ -2039,17 +2047,13 @@ echo 'installer ran'
     unset AGENT_SANDBOX_RUNTIME
     local old_path="$PATH"
     # Set PATH to an empty temp dir so no runtimes are found
-    local empty_bin
-    empty_bin="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$empty_bin'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local empty_bin="$_TEST_TMPDIR"
     export PATH="$empty_bin"
 
     run detect_runtime
 
     export PATH="$old_path"
-    rm -rf "$empty_bin"
-    trap - EXIT
 
     assert_failure
     assert_output --partial "Neither 'podman' nor 'docker' found"
@@ -2057,10 +2061,8 @@ echo 'installer ran'
 
 # bats test_tags=unit
 @test "detect_runtime: when only docker exists, docker is used" {
-    local fake_bin
-    fake_bin="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$fake_bin'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local fake_bin="$_TEST_TMPDIR"
     printf '#!/bin/sh\nexit 0\n' > "${fake_bin}/docker"
     chmod +x "${fake_bin}/docker"
 
@@ -2071,8 +2073,6 @@ echo 'installer ran'
     detect_runtime
 
     export PATH="$old_path"
-    rm -rf "$fake_bin"
-    trap - EXIT
 
     assert_equal "$RUNTIME" "docker"
 }
@@ -2483,5 +2483,87 @@ RTEOF
         fi
     done
     assert_equal "$found" true
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: warns when SSH_AUTH_SOCK is not a socket" {
+    _TEST_TMPDIR="$(mktemp -d)"
+
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=false
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    RUNTIME="docker"
+    # Set to a regular file, not a socket
+    export SSH_AUTH_SOCK="${_TEST_TMPDIR}/not-a-socket"
+    touch "$SSH_AUTH_SOCK"
+
+    assemble_mount_flags
+
+    unset SSH_AUTH_SOCK
+
+    assert_equal "$SSH_FORWARDED" "false"
+}
+
+# bats test_tags=unit
+@test "assemble_mount_flags: forwards SSH socket when SSH_AUTH_SOCK is a valid socket" {
+    # Skip if python3 is not available for socket creation
+    command -v python3 &>/dev/null || skip "python3 required for socket creation"
+
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local ssh_sock="${_TEST_TMPDIR2}/agent.sock"
+
+    # Create a real Unix domain socket; keep it alive for the duration of the test
+    python3 -c "
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(sys.argv[1])
+s.listen(1)
+open(sys.argv[1] + '.ready', 'w').close()
+time.sleep(5)
+" "$ssh_sock" &
+    local py_pid=$!
+    # Ensure the background process is killed even if the test body aborts early
+    # shellcheck disable=SC2064
+    trap "kill '$py_pid' 2>/dev/null || true; wait '$py_pid' 2>/dev/null || true" EXIT
+
+    # Wait for socket to be ready
+    local i=0
+    while [[ ! -f "${ssh_sock}.ready" ]] && (( i < 50 )); do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    [[ -S "$ssh_sock" ]] || { kill "$py_pid" 2>/dev/null; skip "Socket creation failed"; }
+
+    WORKSPACE="$_TEST_TMPDIR"
+    MOUNT_Z=""
+    OPT_NO_SSH=false
+    OPT_FOLLOW_SYMLINKS=false
+    OPT_EXTRA_MOUNTS=()
+    CFG_EXTRA_PATHS=()
+    RUNTIME="docker"
+    export SSH_AUTH_SOCK="$ssh_sock"
+
+    assemble_mount_flags
+
+    kill "$py_pid" 2>/dev/null || true
+    wait "$py_pid" 2>/dev/null || true
+    trap - EXIT
+    rm -f "${ssh_sock}.ready"
+    unset SSH_AUTH_SOCK
+
+    assert_equal "$SSH_FORWARDED" "true"
+
+    local found=false
+    for flag in "${MOUNT_FLAGS[@]}"; do
+        if [[ "$flag" == *"/tmp/ssh_auth_sock:ro"* ]]; then
+            found=true
+            break
+        fi
+    done
+    assert_equal "$found" "true"
 }
 
