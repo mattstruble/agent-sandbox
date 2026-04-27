@@ -34,6 +34,7 @@ setup() {
     _TEST_AGENT=""
     _TEST_GITCONFIG=""
     _TEST_HOST_CONFIG_DIR=""
+    _OPENCODE_PATH=""
 }
 
 teardown() {
@@ -64,6 +65,78 @@ _run_in_sandbox() {
         --security-opt=no-new-privileges \
         --entrypoint bash "$IMAGE" \
         -c "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Helper: _run_with_entrypoint
+# ---------------------------------------------------------------------------
+# Run the container using the image's default entrypoint (entrypoint.sh) with
+# production-equivalent security flags. Accepts optional flags:
+#   -a AGENT         Set AGENT env var (omit to test missing-AGENT error path)
+#   -w WORKSPACE     Mount workspace dir and set SANDBOX_WORKSPACE env
+#   -b AGENT_SCRIPT  Mount script over the opencode binary. Requires
+#                    _ensure_opencode_path to be called first (outside `run`)
+#                    so that skip propagates correctly to BATS.
+#   -c CONFIG_DIR    Mount host config at /host-config/opencode:ro
+#   -e KEY=VAL       Extra -e flags (repeatable)
+#   -v SRC:DST:OPT   Extra -v flags (repeatable)
+_run_with_entrypoint() {
+    local agent="" workspace="" agent_script="" config_dir=""
+    local -a extra_env=() extra_vol=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -a) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; agent="$2"; shift 2 ;;
+            -w) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; workspace="$2"; shift 2 ;;
+            -b) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; agent_script="$2"; shift 2 ;;
+            -c) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; config_dir="$2"; shift 2 ;;
+            -e) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; extra_env+=(-e "$2"); shift 2 ;;
+            -v) [[ $# -ge 2 ]] || { echo "Flag $1 requires an argument" >&2; return 1; }; extra_vol+=(-v "$2"); shift 2 ;;
+            *)  echo "Unknown _run_with_entrypoint flag: $1" >&2; return 1 ;;
+        esac
+    done
+
+    local -a cmd=(
+        "$RUNTIME" run --rm
+        --cap-add=NET_ADMIN
+        --cap-add=NET_RAW
+        --cap-add=SETUID
+        --cap-add=SETGID
+        --cap-add=SYS_TIME
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1
+        --security-opt=no-new-privileges
+    )
+
+    [[ -n "$agent" ]] && cmd+=(-e "AGENT=${agent}")
+
+    if [[ -n "$workspace" ]]; then
+        cmd+=(-v "${workspace}:${workspace}:rw" -e "SANDBOX_WORKSPACE=${workspace}")
+    fi
+
+    [[ -n "$agent_script" ]] && cmd+=(-v "${agent_script}:${_OPENCODE_PATH}:ro")
+
+    [[ -n "$config_dir" ]] && cmd+=(-v "${config_dir}:/host-config/opencode:ro")
+
+    cmd+=("${extra_env[@]}" "${extra_vol[@]}" "$IMAGE")
+
+    "${cmd[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# Helper: _ensure_opencode_path
+# ---------------------------------------------------------------------------
+# Populate _OPENCODE_PATH with the absolute path to the opencode binary inside
+# the image. Must be called directly in the test body (not inside `run`) so
+# that `skip` propagates correctly to BATS when the path cannot be determined.
+_ensure_opencode_path() {
+    if [[ -z "${_OPENCODE_PATH:-}" ]]; then
+        _OPENCODE_PATH=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+        if [[ -z "$_OPENCODE_PATH" || "$_OPENCODE_PATH" != /* ]]; then
+            skip "opencode binary path could not be determined"
+        fi
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,29 +286,9 @@ _run_in_sandbox() {
         'grep -q "Runtime Package Management" ~/.config/opencode/AGENTS.md' \
         > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    # Determine opencode binary path inside the image
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}:rw" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT"
     assert_success
 }
 
@@ -260,29 +313,9 @@ _run_in_sandbox() {
         'exit 0' \
         > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}:rw" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT" -c "$_TEST_HOST_CONFIG_DIR"
     assert_success
     # The existing content and the Nix instructions must be on separate lines.
     # If the newline separator is missing, "existing content without trailing newline"
@@ -371,14 +404,12 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 8080)" {
-    # The firewall design uses a catch-all REJECT at the end of the OUTPUT chain
+@test "firewall: catch-all REJECT rule blocks non-allowed TCP ports" {
+    # The firewall uses a catch-all REJECT at the end of the OUTPUT chain
     # (after ACCEPT rules for allowed ports: 80, 443, 22, DNS, NTP).
-    # This test verifies two things:
-    #   1. The catch-all REJECT rule exists as the final rule in OUTPUT (no dport).
-    #   2. Port 8080 has no ACCEPT rule — it falls through to the catch-all.
-    # This is more specific than checking for any REJECT rule, which would pass
-    # even if only an unrelated port had a REJECT rule.
+    # Verify:
+    #   1. The catch-all REJECT rule exists as the final rule (no dport qualifier).
+    #   2. An arbitrary non-allowed port (8080) has no ACCEPT rule.
     run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
             # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
             if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
@@ -388,36 +419,13 @@ _run_in_sandbox() {
             fi
             # Verify port 8080 is NOT in any ACCEPT rule
             if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:8080"; then
-                echo "PORT_8080_ACCEPTED"
+                echo "PORT_ACCEPTED"
             else
-                echo "PORT_8080_NOT_ACCEPTED"
+                echo "PORT_NOT_ACCEPTED"
             fi'
     assert_success
     assert_output --partial "CATCHALL_REJECT_PRESENT"
-    assert_output --partial "PORT_8080_NOT_ACCEPTED"
-}
-
-# bats test_tags=integration
-@test "firewall: non-allowed TCP ports are blocked by catch-all REJECT rule (port 3000)" {
-    # Same verification as port 8080: the catch-all REJECT blocks port 3000 because
-    # there is no ACCEPT rule for it. Tests both the presence of the catch-all and
-    # the absence of a port-3000 ACCEPT rule.
-    run _run_in_sandbox '/init-firewall.sh >/dev/null 2>&1 || { echo "FIREWALL_INIT_FAILED"; exit 1; }
-            # Verify the catch-all REJECT rule exists (REJECT with no dpt: qualifier = catch-all)
-            if iptables -L OUTPUT -n | grep -E "^REJECT" | grep -qv "dpt:"; then
-                echo "CATCHALL_REJECT_PRESENT"
-            else
-                echo "CATCHALL_REJECT_MISSING"
-            fi
-            # Verify port 3000 is NOT in any ACCEPT rule
-            if iptables -L OUTPUT -n | grep "ACCEPT" | grep -q "dpt:3000"; then
-                echo "PORT_3000_ACCEPTED"
-            else
-                echo "PORT_3000_NOT_ACCEPTED"
-            fi'
-    assert_success
-    assert_output --partial "CATCHALL_REJECT_PRESENT"
-    assert_output --partial "PORT_3000_NOT_ACCEPTED"
+    assert_output --partial "PORT_NOT_ACCEPTED"
 }
 
 # bats test_tags=integration,network
@@ -472,29 +480,9 @@ _run_in_sandbox() {
         'echo "RUNNING_AS_USER=$(id -un)"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    # Determine opencode binary path inside the image
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT"
     assert_success
     assert_output --partial "FAKE_AGENT_MARKER"
     assert_output --partial "RUNNING_AS_USER=sandbox"
@@ -502,37 +490,15 @@ _run_in_sandbox() {
 
 # bats test_tags=integration
 @test "entrypoint: fails with clear error when AGENT is not set" {
-    # AGENT validation happens before any capability-requiring operations,
-    # so no workspace mount or SETUID/SETGID caps are needed.
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        "$IMAGE"
+    # Omit -a so AGENT is unset; the entrypoint should reject this before doing any real work.
+    run _run_with_entrypoint
     assert_failure
     assert_output --partial "AGENT environment variable is not set"
 }
 
 # bats test_tags=integration
 @test "entrypoint: fails with clear error when AGENT is invalid" {
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=invalid-agent \
-        "$IMAGE"
+    run _run_with_entrypoint -a invalid-agent
     assert_failure
     assert_output --partial "not valid"
 }
@@ -549,29 +515,9 @@ _run_in_sandbox() {
         'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    # Determine opencode binary path inside the image
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT"
     assert_success
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
@@ -624,30 +570,10 @@ _run_in_sandbox() {
         'echo "ENV_VAR_VALUE=${TEST_INTEGRATION_VAR}"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    # Determine opencode binary path inside the image
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -e TEST_INTEGRATION_VAR=hello-from-host \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT" \
+        -e TEST_INTEGRATION_VAR=hello-from-host
     assert_success
     assert_output --partial "ENV_VAR_VALUE=hello-from-host"
 }
@@ -668,30 +594,10 @@ _run_in_sandbox() {
         'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \
         'exit 0' > "$_TEST_AGENT"
     chmod +x "$_TEST_AGENT"
+    _ensure_opencode_path
 
-    # Determine opencode binary path inside the image
-    local opencode_path
-    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
-    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
-        skip "opencode binary path could not be determined"
-    fi
-
-    run "$RUNTIME" run --rm \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        --cap-add=SETUID \
-        --cap-add=SETGID \
-        --cap-add=SYS_TIME \
-        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
-        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
-        --security-opt=no-new-privileges \
-        -e AGENT=opencode \
-        -v "${_TEST_AGENT}:${opencode_path}:ro" \
-        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
-        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
-        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
-        "$IMAGE"
+    run _run_with_entrypoint -a opencode -w "$_TEST_WORKSPACE" -b "$_TEST_AGENT" \
+        -c "$_TEST_HOST_CONFIG_DIR"
     assert_success
     # Non-permission config is preserved
     assert_output --partial '"model": "test-model"'

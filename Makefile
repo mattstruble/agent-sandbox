@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-e2e test-fast ensure-image clean _check-runtime _check-bats-lib
+.PHONY: test test-unit test-integration test-integration-offline test-e2e test-fast ensure-image clean _check-runtime _check-bats-lib
 
 # Auto-detect container runtime: prefer podman, fall back to docker.
 RUNTIME ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
@@ -26,6 +26,9 @@ test-integration: ensure-image _check-bats-lib
 
 test-e2e: ensure-image _check-bats-lib
 	AGENT_SANDBOX_VERSION=$(VERSION) bats --filter-tags e2e -r tests/
+
+test-integration-offline: ensure-image _check-bats-lib
+	AGENT_SANDBOX_VERSION=$(VERSION) bats --filter-tags 'integration,!network' -r tests/
 
 test: test-unit test-integration test-e2e
 
