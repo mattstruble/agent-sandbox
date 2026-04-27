@@ -41,6 +41,18 @@ teardown() {
     if [[ -n "${_TEST_HOME:-}" && "$_TEST_HOME" != "/" ]]; then
         rm -rf "$_TEST_HOME"
     fi
+    if [[ -n "${_SYMLINK_WS:-}" && "$_SYMLINK_WS" != "/" ]]; then
+        rm -rf "$_SYMLINK_WS"
+    fi
+    if [[ -n "${_EXTERNAL_DIR:-}" && "$_EXTERNAL_DIR" != "/" ]]; then
+        rm -rf "$_EXTERNAL_DIR"
+    fi
+    if [[ -n "${_TEST_TMPDIR:-}" && "$_TEST_TMPDIR" != "/" ]]; then
+        rm -rf "$_TEST_TMPDIR"
+    fi
+    if [[ -n "${_TEST_TMPDIR2:-}" && "$_TEST_TMPDIR2" != "/" ]]; then
+        rm -rf "$_TEST_TMPDIR2"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -83,15 +95,12 @@ refute_env_flag() {
 # Set up a common symlink workspace structure for symlink mount tests.
 # Creates a temp workspace dir with a symlink to an external temp dir.
 # Sets _SYMLINK_WS and _EXTERNAL_DIR in the caller's scope.
-# Registers a cleanup trap; callers should call `rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"; trap - EXIT`
-# after the function under test completes.
+# Cleanup is handled by teardown() via _SYMLINK_WS and _EXTERNAL_DIR.
 _setup_symlink_workspace() {
     _SYMLINK_WS="$(mktemp -d)"
     _EXTERNAL_DIR="$(mktemp -d)"
     echo "content" > "$_EXTERNAL_DIR/file.txt"
     ln -s "$_EXTERNAL_DIR" "$_SYMLINK_WS/external-link"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$_SYMLINK_WS' '$_EXTERNAL_DIR'" EXIT
 }
 
 # ---------------------------------------------------------------------------
@@ -102,33 +111,33 @@ _setup_symlink_workspace() {
 @test "parse_args: no arguments sets all OPT_ vars to defaults" {
     parse_args
 
-    [[ "$OPT_AGENT"              == ""    ]]
-    [[ "$OPT_PULL"               == false ]]
-    [[ "$OPT_FOLLOW_SYMLINKS"    == false ]]
-    [[ "$OPT_FOLLOW_ALL_SYMLINKS" == false ]]
-    [[ "$OPT_NO_SSH"             == false ]]
-    [[ "$OPT_LIST"               == false ]]
-    [[ "$OPT_STOP"               == false ]]
-    [[ "$OPT_PRUNE"              == false ]]
-    [[ "$OPT_UPDATE"             == false ]]
-    [[ "$OPT_HELP"               == false ]]
-    [[ "$OPT_VERSION"            == false ]]
-    [[ "${#OPT_EXTRA_MOUNTS[@]}" -eq 0   ]]
-    [[ "$OPT_WORKSPACE"          == ""   ]]
+    assert_equal "$OPT_AGENT"               ""
+    assert_equal "$OPT_PULL"                false
+    assert_equal "$OPT_FOLLOW_SYMLINKS"     false
+    assert_equal "$OPT_FOLLOW_ALL_SYMLINKS" false
+    assert_equal "$OPT_NO_SSH"              false
+    assert_equal "$OPT_LIST"                false
+    assert_equal "$OPT_STOP"                false
+    assert_equal "$OPT_PRUNE"               false
+    assert_equal "$OPT_UPDATE"              false
+    assert_equal "$OPT_HELP"                false
+    assert_equal "$OPT_VERSION"             false
+    assert_equal "${#OPT_EXTRA_MOUNTS[@]}"  0
+    assert_equal "$OPT_WORKSPACE"           ""
 }
 
 # bats test_tags=unit
 @test "parse_args: --agent opencode sets OPT_AGENT to opencode" {
     parse_args --agent opencode
 
-    [[ "$OPT_AGENT" == "opencode" ]]
+    assert_equal "$OPT_AGENT" "opencode"
 }
 
 # bats test_tags=unit
 @test "parse_args: -a shorthand sets OPT_AGENT" {
     parse_args -a opencode
 
-    [[ "$OPT_AGENT" == "opencode" ]]
+    assert_equal "$OPT_AGENT" "opencode"
 }
 
 # bats test_tags=unit
@@ -136,124 +145,124 @@ _setup_symlink_workspace() {
     # parse_args just stores whatever is passed; no die() for invalid agent names
     parse_args --agent invalid-value
 
-    [[ "$OPT_AGENT" == "invalid-value" ]]
+    assert_equal "$OPT_AGENT" "invalid-value"
 }
 
 # bats test_tags=unit
 @test "parse_args: --pull sets OPT_PULL to true" {
     parse_args --pull
 
-    [[ "$OPT_PULL" == true ]]
+    assert_equal "$OPT_PULL" true
 }
 
 # bats test_tags=unit
 @test "parse_args: -b shorthand sets OPT_PULL to true" {
     parse_args -b
 
-    [[ "$OPT_PULL" == true ]]
+    assert_equal "$OPT_PULL" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --no-ssh sets OPT_NO_SSH to true" {
     parse_args --no-ssh
 
-    [[ "$OPT_NO_SSH" == true ]]
+    assert_equal "$OPT_NO_SSH" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --follow-symlinks sets OPT_FOLLOW_SYMLINKS to true" {
     parse_args --follow-symlinks
 
-    [[ "$OPT_FOLLOW_SYMLINKS" == true ]]
-    [[ "$OPT_FOLLOW_ALL_SYMLINKS" == false ]]
+    assert_equal "$OPT_FOLLOW_SYMLINKS"     true
+    assert_equal "$OPT_FOLLOW_ALL_SYMLINKS" false
 }
 
 # bats test_tags=unit
 @test "parse_args: --follow-all-symlinks sets both OPT_FOLLOW_ALL_SYMLINKS and OPT_FOLLOW_SYMLINKS to true" {
     parse_args --follow-all-symlinks
 
-    [[ "$OPT_FOLLOW_ALL_SYMLINKS" == true ]]
-    [[ "$OPT_FOLLOW_SYMLINKS"     == true ]]
+    assert_equal "$OPT_FOLLOW_ALL_SYMLINKS" true
+    assert_equal "$OPT_FOLLOW_SYMLINKS"     true
 }
 
 # bats test_tags=unit
 @test "parse_args: --list sets OPT_LIST to true" {
     parse_args --list
 
-    [[ "$OPT_LIST" == true ]]
+    assert_equal "$OPT_LIST" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --stop sets OPT_STOP to true" {
     parse_args --stop
 
-    [[ "$OPT_STOP" == true ]]
+    assert_equal "$OPT_STOP" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --prune sets OPT_PRUNE to true" {
     parse_args --prune
 
-    [[ "$OPT_PRUNE" == true ]]
+    assert_equal "$OPT_PRUNE" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --version sets OPT_VERSION to true" {
     parse_args --version
 
-    [[ "$OPT_VERSION" == true ]]
+    assert_equal "$OPT_VERSION" true
 }
 
 # bats test_tags=unit
 @test "parse_args: -v shorthand sets OPT_VERSION to true" {
     parse_args -v
 
-    [[ "$OPT_VERSION" == true ]]
+    assert_equal "$OPT_VERSION" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --help sets OPT_HELP to true" {
     parse_args --help
 
-    [[ "$OPT_HELP" == true ]]
+    assert_equal "$OPT_HELP" true
 }
 
 # bats test_tags=unit
 @test "parse_args: -h shorthand sets OPT_HELP to true" {
     parse_args -h
 
-    [[ "$OPT_HELP" == true ]]
+    assert_equal "$OPT_HELP" true
 }
 
 # bats test_tags=unit
 @test "parse_args: --update sets OPT_UPDATE to true" {
     parse_args --update
 
-    [[ "$OPT_UPDATE" == true ]]
+    assert_equal "$OPT_UPDATE" true
 }
 
 # bats test_tags=unit
 @test "parse_args: positional argument sets OPT_WORKSPACE" {
     parse_args /some/path
 
-    [[ "$OPT_WORKSPACE" == "/some/path" ]]
+    assert_equal "$OPT_WORKSPACE" "/some/path"
 }
 
 # bats test_tags=unit
 @test "parse_args: --mount adds to OPT_EXTRA_MOUNTS" {
     parse_args --mount /foo/bar
 
-    [[ "${#OPT_EXTRA_MOUNTS[@]}" -eq 1 ]]
-    [[ "${OPT_EXTRA_MOUNTS[0]}" == "/foo/bar" ]]
+    assert_equal "${#OPT_EXTRA_MOUNTS[@]}" 1
+    assert_equal "${OPT_EXTRA_MOUNTS[0]}"  "/foo/bar"
 }
 
 # bats test_tags=unit
 @test "parse_args: multiple --mount flags accumulate in OPT_EXTRA_MOUNTS" {
     parse_args --mount /foo/bar --mount /baz/qux
 
-    [[ "${#OPT_EXTRA_MOUNTS[@]}" -eq 2 ]]
-    [[ "${OPT_EXTRA_MOUNTS[0]}" == "/foo/bar" ]]
-    [[ "${OPT_EXTRA_MOUNTS[1]}" == "/baz/qux" ]]
+    assert_equal "${#OPT_EXTRA_MOUNTS[@]}" 2
+    assert_equal "${OPT_EXTRA_MOUNTS[0]}"  "/foo/bar"
+    assert_equal "${OPT_EXTRA_MOUNTS[1]}"  "/baz/qux"
 }
 
 # bats test_tags=unit
@@ -293,7 +302,7 @@ _setup_symlink_workspace() {
     # After `--`, remaining arguments are treated as positional args.
     parse_args -- /my/workspace
 
-    [[ "$OPT_WORKSPACE" == "/my/workspace" ]]
+    assert_equal "$OPT_WORKSPACE" "/my/workspace"
 }
 
 # ---------------------------------------------------------------------------
@@ -306,7 +315,7 @@ _setup_symlink_workspace() {
     CFG_AGENT="opencode"
     apply_config_defaults
 
-    [[ "$OPT_AGENT" == "opencode" ]]
+    assert_equal "$OPT_AGENT" "opencode"
 }
 
 # bats test_tags=unit
@@ -315,7 +324,7 @@ _setup_symlink_workspace() {
     CFG_AGENT="opencode"
     apply_config_defaults
 
-    [[ "$OPT_AGENT" == "opencode" ]]
+    assert_equal "$OPT_AGENT" "opencode"
 }
 
 # bats test_tags=unit
@@ -337,7 +346,7 @@ _setup_symlink_workspace() {
     CFG_FOLLOW_ALL_SYMLINKS=false
     apply_config_defaults
 
-    [[ "$OPT_FOLLOW_SYMLINKS" == true ]]
+    assert_equal "$OPT_FOLLOW_SYMLINKS" true
 }
 
 # bats test_tags=unit
@@ -348,8 +357,8 @@ _setup_symlink_workspace() {
     CFG_FOLLOW_ALL_SYMLINKS=true
     apply_config_defaults
 
-    [[ "$OPT_FOLLOW_ALL_SYMLINKS" == true ]]
-    [[ "$OPT_FOLLOW_SYMLINKS"     == true ]]
+    assert_equal "$OPT_FOLLOW_ALL_SYMLINKS" true
+    assert_equal "$OPT_FOLLOW_SYMLINKS"     true
 }
 
 # bats test_tags=unit
@@ -359,7 +368,7 @@ _setup_symlink_workspace() {
     CFG_FOLLOW_SYMLINKS=false
     apply_config_defaults
 
-    [[ "$OPT_FOLLOW_SYMLINKS" == true ]]
+    assert_equal "$OPT_FOLLOW_SYMLINKS" true
 }
 
 # ---------------------------------------------------------------------------
@@ -380,12 +389,12 @@ _setup_symlink_workspace() {
     parse_config
 
     # Scalar values must be unchanged (parse_config is a no-op for scalars when file is missing)
-    [[ "$CFG_AGENT"           == "opencode" ]]
-    [[ "$CFG_MEMORY"          == "32g"    ]]
-    [[ "$CFG_CPUS"            -eq 16      ]]
-    [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
+    assert_equal "$CFG_AGENT"           "opencode"
+    assert_equal "$CFG_MEMORY"          "32g"
+    assert_equal "$CFG_CPUS"            16
+    assert_equal "$CFG_FOLLOW_SYMLINKS" true
     # Arrays are reset to empty
-    [[ "${#CFG_EXTRA_VARS[@]}" -eq 0 ]]
+    assert_equal "${#CFG_EXTRA_VARS[@]}" 0
 }
 
 # bats test_tags=unit
@@ -393,12 +402,12 @@ _setup_symlink_workspace() {
     CONFIG_FILE="${FIXTURE_DIR}/config-valid.toml"
     parse_config
 
-    [[ "$CFG_AGENT"           == "opencode" ]]
-    [[ "$CFG_MEMORY"          == "16g"    ]]
-    [[ "$CFG_CPUS"            -eq 8       ]]
-    [[ "$CFG_FOLLOW_SYMLINKS" == true     ]]
-    [[ "${#CFG_EXTRA_VARS[@]}" -eq 1      ]]
-    [[ "${CFG_EXTRA_VARS[0]}" == "CUSTOM_VAR" ]]
+    assert_equal "$CFG_AGENT"            "opencode"
+    assert_equal "$CFG_MEMORY"           "16g"
+    assert_equal "$CFG_CPUS"             8
+    assert_equal "$CFG_FOLLOW_SYMLINKS"  true
+    assert_equal "${#CFG_EXTRA_VARS[@]}" 1
+    assert_equal "${CFG_EXTRA_VARS[0]}"  "CUSTOM_VAR"
 }
 
 # bats test_tags=unit
@@ -414,12 +423,12 @@ _setup_symlink_workspace() {
     parse_config
 
     # Only agent was set in the partial config
-    [[ "$CFG_AGENT"  == "opencode"  ]]
+    assert_equal "$CFG_AGENT"            "opencode"
     # Other values should remain at defaults
-    [[ "$CFG_MEMORY" == "8g"      ]]
-    [[ "$CFG_CPUS"   -eq 4        ]]
-    [[ "$CFG_FOLLOW_SYMLINKS" == false ]]
-    [[ "${#CFG_EXTRA_VARS[@]}" -eq 0   ]]
+    assert_equal "$CFG_MEMORY"           "8g"
+    assert_equal "$CFG_CPUS"             4
+    assert_equal "$CFG_FOLLOW_SYMLINKS"  false
+    assert_equal "${#CFG_EXTRA_VARS[@]}" 0
 }
 
 # bats test_tags=unit
@@ -438,7 +447,7 @@ _setup_symlink_workspace() {
     parse_config
     parse_config  # second call should not double the arrays
 
-    [[ "${#CFG_EXTRA_VARS[@]}" -eq 1 ]]
+    assert_equal "${#CFG_EXTRA_VARS[@]}" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -450,7 +459,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "MyProject")
 
-    [[ "$result" == "myproject" ]]
+    assert_equal "$result" "myproject"
 }
 
 # bats test_tags=unit
@@ -458,7 +467,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "my_project")
 
-    [[ "$result" == "myproject" ]]
+    assert_equal "$result" "myproject"
 }
 
 # bats test_tags=unit
@@ -466,7 +475,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "project.v2")
 
-    [[ "$result" == "projectv2" ]]
+    assert_equal "$result" "projectv2"
 }
 
 # bats test_tags=unit
@@ -474,7 +483,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "my-project")
 
-    [[ "$result" == "my-project" ]]
+    assert_equal "$result" "my-project"
 }
 
 # bats test_tags=unit
@@ -483,8 +492,8 @@ _setup_symlink_workspace() {
     result=$(sanitize_basename "My_Project.v2")
 
     # Only lowercase alphanumeric and hyphens remain
-    [[ "$result" =~ ^[a-z0-9-]*$ ]]
-    [[ "$result" == "myprojectv2" ]]
+    assert_regex "$result" "^[a-z0-9-]+$"
+    assert_equal "$result" "myprojectv2"
 }
 
 # bats test_tags=unit
@@ -492,7 +501,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "")
 
-    [[ "$result" == "" ]]
+    assert_equal "$result" ""
 }
 
 # bats test_tags=unit
@@ -500,7 +509,7 @@ _setup_symlink_workspace() {
     local result
     result=$(sanitize_basename "my project")
 
-    [[ "$result" == "myproject" ]]
+    assert_equal "$result" "myproject"
 }
 
 # bats test_tags=unit
@@ -508,8 +517,8 @@ _setup_symlink_workspace() {
     local result
     result=$(compute_workspace_hash "/home/user/my-project")
 
-    [[ ${#result} -eq 6 ]]
-    [[ "$result" =~ ^[0-9a-f]{6}$ ]]
+    assert_equal "${#result}" 6
+    assert_regex "$result" "^[0-9a-f]{6}$"
 }
 
 # bats test_tags=unit
@@ -518,7 +527,7 @@ _setup_symlink_workspace() {
     hash1=$(compute_workspace_hash "/home/user/my-project")
     hash2=$(compute_workspace_hash "/home/user/my-project")
 
-    [[ "$hash1" == "$hash2" ]]
+    assert_equal "$hash1" "$hash2"
 }
 
 # bats test_tags=unit
@@ -527,7 +536,7 @@ _setup_symlink_workspace() {
     hash1=$(compute_workspace_hash "/home/user/project-a")
     hash2=$(compute_workspace_hash "/home/user/project-b")
 
-    [[ "$hash1" != "$hash2" ]]
+    assert_not_equal "$hash1" "$hash2"
 }
 
 # bats test_tags=unit
@@ -536,7 +545,7 @@ _setup_symlink_workspace() {
     result=$(compute_container_name "opencode" "/home/user/my-project")
 
     # Should match: agent-sandbox-opencode-my-project-<6chars>
-    [[ "$result" =~ ^agent-sandbox-opencode-my-project-[0-9a-f]{6}$ ]]
+    assert_regex "$result" "^agent-sandbox-opencode-my-project-[0-9a-f]{6}$"
 }
 
 # bats test_tags=unit
@@ -545,7 +554,7 @@ _setup_symlink_workspace() {
     name1=$(compute_container_name "opencode" "/home/user/my-project")
     name2=$(compute_container_name "opencode" "/home/user/my-project")
 
-    [[ "$name1" == "$name2" ]]
+    assert_equal "$name1" "$name2"
 }
 
 # bats test_tags=unit
@@ -554,7 +563,7 @@ _setup_symlink_workspace() {
     name1=$(compute_container_name "opencode" "/home/user/project-a")
     name2=$(compute_container_name "opencode" "/home/user/project-b")
 
-    [[ "$name1" != "$name2" ]]
+    assert_not_equal "$name1" "$name2"
 }
 
 # bats test_tags=unit
@@ -563,7 +572,7 @@ _setup_symlink_workspace() {
     result=$(compute_container_name "opencode" "/home/user/My_Project.v2")
 
     # Basename "My_Project.v2" → sanitized to "myprojectv2"
-    [[ "$result" =~ ^agent-sandbox-opencode-myprojectv2-[0-9a-f]{6}$ ]]
+    assert_regex "$result" "^agent-sandbox-opencode-myprojectv2-[0-9a-f]{6}$"
 }
 
 # bats test_tags=unit
@@ -572,26 +581,7 @@ _setup_symlink_workspace() {
     result=$(compute_container_name "opencode" "/home/user/my-project")
 
     # Container names must be safe for use as DNS names / container identifiers
-    [[ "$result" =~ ^[a-z0-9-]+$ ]]
-}
-
-# ---------------------------------------------------------------------------
-# 5. Image Tag Computation Tests
-# ---------------------------------------------------------------------------
-
-# bats test_tags=unit
-@test "image tag: IMAGE_TAG is constructed as 'agent-sandbox:<VERSION>'" {
-    # Verify that the launcher's IMAGE_TAG construction formula produces the
-    # expected format. The launcher sets IMAGE_TAG="agent-sandbox:${VERSION}"
-    # in main(); we replicate that formula here and verify the result.
-    local expected="agent-sandbox:${VERSION}"
-
-    # Simulate the launcher's IMAGE_TAG assignment
-    local IMAGE_TAG="agent-sandbox:${VERSION}"
-
-    [[ "$IMAGE_TAG" == "$expected" ]]
-    # Verify the tag contains the actual version string (not a placeholder)
-    [[ "$IMAGE_TAG" == "agent-sandbox:0.1.0-test" ]]
+    assert_regex "$result" "^[a-z0-9-]+$"
 }
 
 # ---------------------------------------------------------------------------
@@ -614,9 +604,6 @@ _setup_symlink_workspace() {
 
     collect_symlink_mounts
 
-    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
-    trap - EXIT
-
     # The resolved external dir should appear in MOUNT_FLAGS
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -625,15 +612,13 @@ _setup_symlink_workspace() {
             break
         fi
     done
-    [[ "$found" == true ]]
+    assert_equal "$found" true
 }
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: skips broken symlinks" {
-    local workspace
-    workspace="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local workspace="$_TEST_TMPDIR"
 
     ln -s "/nonexistent/broken-target" "${workspace}/broken-link"
 
@@ -645,9 +630,6 @@ _setup_symlink_workspace() {
     # Should not fail even with broken symlinks
     collect_symlink_mounts
 
-    rm -rf "$workspace"
-    trap - EXIT
-
     # /nonexistent/broken-target must not appear in MOUNT_FLAGS
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -656,18 +638,17 @@ _setup_symlink_workspace() {
             break
         fi
     done
-    [[ "$found" == false ]]
+    assert_equal "$found" false
 }
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: skips dotfile dirs when OPT_FOLLOW_ALL_SYMLINKS=false" {
-    local workspace dot_parent dot_dir
-    workspace="$(mktemp -d)"
-    dot_parent="$(mktemp -d)"
-    dot_dir="${dot_parent}/.dotfile-test-$$"
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local workspace="$_TEST_TMPDIR"
+    local dot_parent="$_TEST_TMPDIR2"
+    local dot_dir="${dot_parent}/.dotfile-test-$$"
     mkdir -p "$dot_dir"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$dot_parent'" EXIT
 
     ln -s "$dot_dir" "${workspace}/link-to-dotdir"
 
@@ -682,9 +663,6 @@ _setup_symlink_workspace() {
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$dot_parent"
-    trap - EXIT
-
     # The dotfile dir must NOT appear in MOUNT_FLAGS
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -693,18 +671,17 @@ _setup_symlink_workspace() {
             break
         fi
     done
-    [[ "$found" == false ]]
+    assert_equal "$found" false
 }
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: includes dotfile dirs when OPT_FOLLOW_ALL_SYMLINKS=true" {
-    local workspace dot_parent dot_dir
-    workspace="$(mktemp -d)"
-    dot_parent="$(mktemp -d)"
-    dot_dir="${dot_parent}/.dotfile-test-$$"
+    _TEST_TMPDIR="$(mktemp -d)"
+    _TEST_TMPDIR2="$(mktemp -d)"
+    local workspace="$_TEST_TMPDIR"
+    local dot_parent="$_TEST_TMPDIR2"
+    local dot_dir="${dot_parent}/.dotfile-test-$$"
     mkdir -p "$dot_dir"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace' '$dot_parent'" EXIT
 
     ln -s "$dot_dir" "${workspace}/link-to-dotdir"
 
@@ -719,9 +696,6 @@ _setup_symlink_workspace() {
 
     collect_symlink_mounts
 
-    rm -rf "$workspace" "$dot_parent"
-    trap - EXIT
-
     # The dotfile dir SHOULD appear in MOUNT_FLAGS
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -730,15 +704,13 @@ _setup_symlink_workspace() {
             break
         fi
     done
-    [[ "$found" == true ]]
+    assert_equal "$found" true
 }
 
 # bats test_tags=unit
 @test "collect_symlink_mounts: skips regular directories (non-symlinks)" {
-    local workspace
-    workspace="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$workspace'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local workspace="$_TEST_TMPDIR"
 
     mkdir -p "${workspace}/regular-dir"
 
@@ -749,9 +721,6 @@ _setup_symlink_workspace() {
 
     collect_symlink_mounts
 
-    rm -rf "$workspace"
-    trap - EXIT
-
     # The regular-dir inside the workspace must not appear as a separate mount
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -760,7 +729,7 @@ _setup_symlink_workspace() {
             break
         fi
     done
-    [[ "$found" == false ]]
+    assert_equal "$found" false
 }
 
 # bats test_tags=unit
@@ -780,9 +749,6 @@ _setup_symlink_workspace() {
 
     collect_symlink_mounts
 
-    rm -rf "$_SYMLINK_WS" "$_EXTERNAL_DIR"
-    trap - EXIT
-
     # Count how many times the resolved external dir appears as a mount value in MOUNT_FLAGS
     local count=0
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -790,7 +756,7 @@ _setup_symlink_workspace() {
             count=$((count + 1))
         fi
     done
-    [[ "$count" -eq 1 ]]
+    assert_equal "$count" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -935,10 +901,8 @@ _setup_symlink_workspace() {
 
 # bats test_tags=unit
 @test "resolve_workspace: resolves an existing directory" {
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$tmp_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local tmp_dir="$_TEST_TMPDIR"
 
     # Compute expected value while the directory still exists
     local expected
@@ -946,9 +910,6 @@ _setup_symlink_workspace() {
 
     # Use run to isolate die() calls from the parent shell
     run resolve_workspace "$tmp_dir"
-
-    rm -rf "$tmp_dir"
-    trap - EXIT
 
     assert_success
     assert_output "$expected"
@@ -965,14 +926,9 @@ _setup_symlink_workspace() {
 @test "resolve_workspace: expands tilde to HOME" {
     # Create a directory under HOME to test ~ expansion
     mkdir -p "${HOME}/test-workspace-$$"
-    # shellcheck disable=SC2064
-    trap "rm -rf '${HOME}/test-workspace-$$'" EXIT
 
     # Use run to isolate die() calls from the parent shell
     run resolve_workspace "~/test-workspace-$$"
-
-    rm -rf "${HOME}/test-workspace-$$"
-    trap - EXIT
 
     assert_success
     # portable_realpath may resolve symlinks (e.g. /var -> /private/var on macOS),
@@ -984,10 +940,8 @@ _setup_symlink_workspace() {
 
 # bats test_tags=unit
 @test "resolve_workspace: uses PWD when no argument given" {
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$tmp_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local tmp_dir="$_TEST_TMPDIR"
 
     # Compute expected value while the directory still exists (portable_realpath
     # may require the path to exist to resolve symlinks, e.g. /var -> /private/var).
@@ -1003,9 +957,6 @@ _setup_symlink_workspace() {
         cd '${tmp_dir}'
         resolve_workspace ''
     "
-
-    rm -rf "$tmp_dir"
-    trap - EXIT
 
     assert_success
     assert_output "$expected"
@@ -1825,10 +1776,8 @@ echo 'installer ran'
 
 # bats test_tags=unit
 @test "collect_extra_mounts: :rw suffix splits correctly and passes rw mode" {
-    local extra_dir
-    extra_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$extra_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local extra_dir="$_TEST_TMPDIR"
 
     OPT_EXTRA_MOUNTS=("${extra_dir}:rw")
     CFG_EXTRA_PATHS=()
@@ -1836,9 +1785,6 @@ echo 'installer ran'
     MOUNT_Z=""
 
     collect_extra_mounts
-
-    rm -rf "$extra_dir"
-    trap - EXIT
 
     # Should contain a :rw mount (not :ro)
     local found_rw=false
@@ -1848,15 +1794,13 @@ echo 'installer ran'
             break
         fi
     done
-    [[ "$found_rw" == true ]]
+    assert_equal "$found_rw" true
 }
 
 # bats test_tags=unit
 @test "collect_extra_mounts: default mode is ro when no suffix" {
-    local extra_dir
-    extra_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$extra_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local extra_dir="$_TEST_TMPDIR"
 
     OPT_EXTRA_MOUNTS=("$extra_dir")
     CFG_EXTRA_PATHS=()
@@ -1864,9 +1808,6 @@ echo 'installer ran'
     MOUNT_Z=""
 
     collect_extra_mounts
-
-    rm -rf "$extra_dir"
-    trap - EXIT
 
     # Should contain a :ro mount (not :rw)
     local found_ro=false
@@ -1876,15 +1817,13 @@ echo 'installer ran'
             break
         fi
     done
-    [[ "$found_ro" == true ]]
+    assert_equal "$found_ro" true
 }
 
 # bats test_tags=unit
 @test "collect_extra_mounts: ~/path expands to HOME" {
     local subdir="test-extra-mount-$$"
     mkdir -p "${HOME}/${subdir}"
-    # shellcheck disable=SC2064
-    trap "rm -rf '${HOME}/${subdir}'" EXIT
 
     OPT_EXTRA_MOUNTS=("~/${subdir}")
     CFG_EXTRA_PATHS=()
@@ -1892,9 +1831,6 @@ echo 'installer ran'
     MOUNT_Z=""
 
     collect_extra_mounts
-
-    rm -rf "${HOME}/${subdir}"
-    trap - EXIT
 
     # The mount should reference the expanded HOME path
     local found=false
@@ -1904,25 +1840,25 @@ echo 'installer ran'
             break
         fi
     done
-    [[ "$found" == true ]]
+    assert_equal "$found" true
 }
 
 # bats test_tags=unit
 @test "collect_extra_mounts: HOME-relative paths map to /home/sandbox/ inside container" {
     local subdir="test-sandbox-mount-$$"
-    mkdir -p "${HOME}/${subdir}"
-    # shellcheck disable=SC2064
-    trap "rm -rf '${HOME}/${subdir}'" EXIT
+    # Resolve HOME so portable_realpath-resolved paths compare correctly on macOS
+    # (where /tmp is a symlink to /private/tmp).
+    local resolved_home
+    resolved_home=$(portable_realpath "$HOME")
+    mkdir -p "${resolved_home}/${subdir}"
 
-    OPT_EXTRA_MOUNTS=("${HOME}/${subdir}")
+    OPT_EXTRA_MOUNTS=("${resolved_home}/${subdir}")
     CFG_EXTRA_PATHS=()
     MOUNT_FLAGS=()
     MOUNT_Z=""
+    HOME="$resolved_home"
 
     collect_extra_mounts
-
-    rm -rf "${HOME}/${subdir}"
-    trap - EXIT
 
     # The container path should be /home/sandbox/<relative>
     local found=false
@@ -1932,16 +1868,14 @@ echo 'installer ran'
             break
         fi
     done
-    [[ "$found" == true ]]
+    assert_equal "$found" true
 }
 
 # bats test_tags=unit
 @test "collect_extra_mounts: non-HOME paths map to same absolute path" {
     # Use /tmp which is outside HOME
-    local extra_dir
-    extra_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$extra_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local extra_dir="$_TEST_TMPDIR"
 
     # Ensure the path is not under HOME
     local resolved
@@ -1949,8 +1883,6 @@ echo 'installer ran'
 
     # Skip if mktemp created the dir under HOME (unlikely but possible)
     if [[ "$resolved" == "$HOME"/* ]]; then
-        rm -rf "$extra_dir"
-        trap - EXIT
         skip "mktemp dir is under HOME — cannot test non-HOME path mapping"
     fi
 
@@ -1961,9 +1893,6 @@ echo 'installer ran'
 
     collect_extra_mounts
 
-    rm -rf "$extra_dir"
-    trap - EXIT
-
     # The container path should equal the host path (same absolute path)
     local found=false
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -1972,7 +1901,7 @@ echo 'installer ran'
             break
         fi
     done
-    [[ "$found" == true ]]
+    assert_equal "$found" true
 }
 
 # bats test_tags=unit
@@ -1986,15 +1915,13 @@ echo 'installer ran'
     collect_extra_mounts
 
     # MOUNT_FLAGS should be empty (the missing path was skipped)
-    [[ "${#MOUNT_FLAGS[@]}" -eq 0 ]]
+    assert_equal "${#MOUNT_FLAGS[@]}" 0
 }
 
 # bats test_tags=unit
 @test "collect_extra_mounts: deduplicates CLI and config mounts for the same path" {
-    local extra_dir
-    extra_dir="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$extra_dir'" EXIT
+    _TEST_TMPDIR="$(mktemp -d)"
+    local extra_dir="$_TEST_TMPDIR"
 
     # Resolve before calling collect_extra_mounts (while the dir exists)
     # so the resolved path matches what collect_extra_mounts stores in MOUNT_FLAGS.
@@ -2009,9 +1936,6 @@ echo 'installer ran'
 
     collect_extra_mounts
 
-    rm -rf "$extra_dir"
-    trap - EXIT
-
     # Count occurrences of the path in MOUNT_FLAGS
     local count=0
     for flag in "${MOUNT_FLAGS[@]}"; do
@@ -2019,7 +1943,7 @@ echo 'installer ran'
             count=$((count + 1))
         fi
     done
-    [[ "$count" -eq 1 ]]
+    assert_equal "$count" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -2048,7 +1972,7 @@ echo 'installer ran'
     rm -rf "$fake_bin"
     trap - EXIT
 
-    [[ "$RUNTIME" == "docker" ]]
+    assert_equal "$RUNTIME" "docker"
 }
 
 # bats test_tags=unit
@@ -2071,7 +1995,7 @@ echo 'installer ran'
     rm -rf "$fake_bin"
     trap - EXIT
 
-    [[ "$RUNTIME" == "podman" ]]
+    assert_equal "$RUNTIME" "podman"
 }
 
 # bats test_tags=unit
@@ -2107,7 +2031,7 @@ echo 'installer ran'
     rm -rf "$fake_bin"
     trap - EXIT
 
-    [[ "$RUNTIME" == "podman" ]]
+    assert_equal "$RUNTIME" "podman"
 }
 
 # bats test_tags=unit
@@ -2150,6 +2074,6 @@ echo 'installer ran'
     rm -rf "$fake_bin"
     trap - EXIT
 
-    [[ "$RUNTIME" == "docker" ]]
+    assert_equal "$RUNTIME" "docker"
 }
 
