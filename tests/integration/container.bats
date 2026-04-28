@@ -96,6 +96,18 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
+@test "image: ty binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" ty
+    assert_success
+}
+
+# bats test_tags=integration
+@test "image: nixd binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" nixd
+    assert_success
+}
+
+# bats test_tags=integration
 @test "image: node binary exists and is executable" {
     run "$RUNTIME" run --rm --entrypoint which "$IMAGE" node
     assert_success
@@ -298,19 +310,22 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "static files: /etc/agent-sandbox/opencode-permissions.json exists and is readable" {
-    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-permissions.json
+@test "static files: /etc/agent-sandbox/opencode-config.json exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-config.json
     assert_success
 }
 
 # bats test_tags=integration
-@test "static files: /etc/agent-sandbox/opencode-permissions.json is valid JSON" {
+@test "static files: /etc/agent-sandbox/opencode-config.json is valid JSON" {
     run "$RUNTIME" run --rm --entrypoint bash "$IMAGE" \
-        -c 'jq . < /etc/agent-sandbox/opencode-permissions.json'
+        -c 'jq . < /etc/agent-sandbox/opencode-config.json'
     assert_success
     assert_output --partial '"permission"'
     assert_output --partial '"doom_loop"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
+    assert_output --partial '"pyright"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -538,10 +553,11 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "entrypoint: opencode permission overrides are written to config file" {
+@test "entrypoint: opencode sandbox overrides are written to config file" {
     # The entrypoint (Phase 2) creates ~/.config/opencode/opencode.json with
-    # permission overrides. We run the full entrypoint and have the fake agent
-    # print the config file contents to verify the overrides were applied.
+    # permission and lsp overrides. We run the full entrypoint and have the
+    # fake agent print the config file contents to verify the overrides were
+    # applied.
     _TEST_WORKSPACE=$(make_tempdir)
     _TEST_AGENT=$(make_temp)
     printf '%s\n' \
@@ -576,6 +592,9 @@ _run_in_sandbox() {
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
+    assert_output --partial '"pyright"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -653,11 +672,12 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "config staging: opencode host config is staged and permission overrides replace user prefs" {
+@test "config staging: opencode host config is staged and sandbox overrides replace user prefs" {
     # Mount a fake opencode config at /host-config/opencode.
-    # The entrypoint copies it to ~/.config/opencode, then replaces the entire
-    # permission block with sandbox overrides. The fake agent reads the resulting
-    # config to verify both staging and full permission replacement worked.
+    # The entrypoint copies it to ~/.config/opencode, then replaces the
+    # `permission` and `lsp` blocks with sandbox overrides. The fake agent
+    # reads the resulting config to verify staging, permission replacement,
+    # and lsp injection all worked.
     _TEST_HOST_CONFIG_DIR=$(make_tempdir)
     printf '{"model": "test-model", "permission": {"bash": "deny"}}\n' > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
 
@@ -693,11 +713,14 @@ _run_in_sandbox() {
         -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
-    # Non-permission config is preserved
+    # Non-overridden config is preserved
     assert_output --partial '"model": "test-model"'
     # Permission block is fully replaced
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
     # User's deny should NOT appear — sandbox overrides everything
     refute_output --partial '"bash": "deny"'
+    # LSP block is injected from sandbox defaults
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
 }

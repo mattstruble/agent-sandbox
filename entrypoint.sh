@@ -93,50 +93,45 @@ if [[ -n "$NIX_INSTRUCTIONS" ]]; then
 	fi
 fi
 
-# ─── Step 6: Apply OpenCode permission overrides ──────────────────────────────
+# ─── Step 6: Apply OpenCode sandbox config overrides ──────────────────────────
 
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
+SANDBOX_CONFIG="/etc/agent-sandbox/opencode-config.json"
+log "Applying sandbox opencode overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
 
-# Build the permission object. The sandbox is the security boundary, so we
-# replace the entire permission block rather than merging with user prefs.
-# - "*": "allow"              → auto-approve all tools (sandbox provides isolation)
-# - "doom_loop": "ask"        → protect against token-burning repeated calls
-# - "external_directory"      → deny access to paths outside the project (protects
-#                                mounted dotfiles like ~/.aws, ~/.gitconfig, auth.json)
-#                                with /tmp/* allowed for scratch space
-SANDBOX_PERMISSIONS='{"*":"allow","doom_loop":"ask","external_directory":{"*":"deny","/tmp/*":"allow"}}'
-readonly SANDBOX_PERMISSIONS
+# The sandbox is the security boundary, so `permission` is replaced wholesale
+# (not merged) with user prefs. `lsp` is also replaced — OpenCode v1.4.11
+# treats a missing `lsp` key as "all LSPs disabled", and the sandbox defaults
+# pick specific LSPs (ty, nixd) and disable others (pyright, eslint).
+if [[ ! -f "$SANDBOX_CONFIG" ]]; then
+	die "Sandbox config not found at $SANDBOX_CONFIG"
+fi
 
 if [[ -f "$OPENCODE_CONFIG" ]]; then
 	tmp=""
 	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") || {
-		warn "mktemp failed — continuing without permission overrides."
+		warn "mktemp failed — continuing without sandbox overrides."
 	}
 	if [[ -n "$tmp" ]]; then
-		if jq --argjson perms "$SANDBOX_PERMISSIONS" '.permission = $perms' "$OPENCODE_CONFIG" >"$tmp"; then
+		if jq --slurpfile sandbox "$SANDBOX_CONFIG" \
+			'.permission = $sandbox[0].permission | .lsp = $sandbox[0].lsp' \
+			"$OPENCODE_CONFIG" >"$tmp"; then
 			if mv -f "$tmp" "$OPENCODE_CONFIG"; then
-				log "Permission overrides applied."
+				log "Sandbox overrides applied."
 			else
 				rm -f "$tmp"
-				warn "mv failed — continuing without permission overrides."
+				warn "mv failed — continuing without sandbox overrides."
 			fi
 		else
 			rm -f "$tmp"
-			warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
+			warn "jq failed to patch $OPENCODE_CONFIG — continuing without sandbox overrides."
 		fi
 	fi
 else
-	if [[ -f /etc/agent-sandbox/opencode-permissions.json ]]; then
-		cp /etc/agent-sandbox/opencode-permissions.json "$OPENCODE_CONFIG"
-		log "Created $OPENCODE_CONFIG from default permissions."
-	else
-		warn "Default permissions file not found — creating inline fallback."
-		printf '{"permission":%s}\n' "$SANDBOX_PERMISSIONS" >"$OPENCODE_CONFIG"
-		log "Created $OPENCODE_CONFIG with permission overrides."
-	fi
+	cp "$SANDBOX_CONFIG" "$OPENCODE_CONFIG"
+	log "Created $OPENCODE_CONFIG from sandbox defaults."
 fi
 
 # ─── Step 7: Initialize rtk for the active agent ──────────────────────────────

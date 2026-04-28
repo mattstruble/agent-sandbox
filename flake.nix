@@ -112,7 +112,13 @@
             apt-get (which requires root you do not have).
           '';
 
-          opencodePermissionsFile = pkgsLinux.writeText "opencode-permissions.json" (
+          # Baseline OpenCode config baked into the image. The entrypoint merges
+          # `permission` into the user's opencode.json at startup; `lsp` is
+          # required because OpenCode v1.4.11 treats a missing `lsp` key as
+          # "all LSPs disabled". `ty` and `nixd` are baked because OpenCode
+          # cannot auto-install them; pyright and eslint are disabled to avoid
+          # double-diagnostics with ty and oxlint.
+          opencodeConfigFile = pkgsLinux.writeText "opencode-config.json" (
             builtins.toJSON {
               permission = {
                 "*" = "allow";
@@ -122,11 +128,29 @@
                   "/tmp/*" = "allow";
                 };
               };
+              lsp = {
+                ty = {
+                  command = [
+                    "ty"
+                    "server"
+                  ];
+                  extensions = [
+                    ".py"
+                    ".pyi"
+                  ];
+                };
+                pyright = {
+                  disabled = true;
+                };
+                eslint = {
+                  disabled = true;
+                };
+              };
             }
           );
 
           # Static configuration files baked into the image.
-          # Using writeText (consistent with nixInstructionsFile and opencodePermissionsFile)
+          # Using writeText (consistent with nixInstructionsFile and opencodeConfigFile)
           # keeps all static content in Nix expressions rather than inline heredocs,
           # making them content-addressed and easier to audit.
           nixConfFile = pkgsLinux.writeText "nix.conf" ''
@@ -201,6 +225,13 @@
               pkgsLinux.nodejs
               pkgsLinux.gh
               pkgsLinux.uv
+              # `ty` (Python) and `nixd` (Nix) are baked because OpenCode has
+              # no auto-install path for them. All other LSPs (yaml-ls, bash,
+              # typescript, oxlint, biome, ...) are auto-installed on first use.
+              pkgsLinux.ty
+              pkgsLinux.nixd
+              # Provides libstdc++.so.6 for OpenCode's native file-watcher.
+              pkgsLinux.stdenv.cc.cc.lib
               nixMinimal
               pkgsLinux.opencode
               pkgsLinux.rtk
@@ -250,9 +281,9 @@
               mkdir -p etc/agent-sandbox
               chmod 0555 etc/agent-sandbox
               cp ${nixInstructionsFile} etc/agent-sandbox/nix-instructions.md
-              cp ${opencodePermissionsFile} etc/agent-sandbox/opencode-permissions.json
+              cp ${opencodeConfigFile} etc/agent-sandbox/opencode-config.json
               chmod 0444 etc/agent-sandbox/nix-instructions.md
-              chmod 0444 etc/agent-sandbox/opencode-permissions.json
+              chmod 0444 etc/agent-sandbox/opencode-config.json
 
               # ── bashrc with command-not-found handler ────────────────────────────
               cp ${sandboxBashrcFile} home/sandbox/.bashrc

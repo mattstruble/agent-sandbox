@@ -219,7 +219,7 @@ Runs inside the container in this order:
 3. Drop to the `sandbox` user via `su-exec`; steps 4–8 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 5. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md`; create file if absent
-6. Apply permission overrides: use `jq` to replace the entire `.permission` object with sandbox defaults (`"*": "allow"`, `"doom_loop": "ask"`, `"external_directory": {"*": "deny", "/tmp/*": "allow"}`); if file absent, copy default from `/etc/agent-sandbox/opencode-permissions.json`
+6. Apply sandbox config overrides: use `jq` to replace the `.permission` and `.lsp` objects with sandbox defaults from `/etc/agent-sandbox/opencode-config.json`; if file absent, copy that file wholesale
 7. Run `rtk init -g --opencode`
 8. `exec opencode` with `$SANDBOX_WORKSPACE` as working directory
 
