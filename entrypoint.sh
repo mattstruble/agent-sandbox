@@ -93,50 +93,48 @@ if [[ -n "$NIX_INSTRUCTIONS" ]]; then
 	fi
 fi
 
-# ─── Step 6: Apply OpenCode permission overrides ──────────────────────────────
+# ─── Step 6: Apply OpenCode sandbox config overrides ──────────────────────────
 
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-log "Applying opencode permission overrides to $OPENCODE_CONFIG..."
+SANDBOX_CONFIG="/etc/agent-sandbox/opencode-config.json"
+log "Applying sandbox opencode overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
 
-# Build the permission object. The sandbox is the security boundary, so we
-# replace the entire permission block rather than merging with user prefs.
-# - "*": "allow"              → auto-approve all tools (sandbox provides isolation)
-# - "doom_loop": "ask"        → protect against token-burning repeated calls
-# - "external_directory"      → deny access to paths outside the project (protects
-#                                mounted dotfiles like ~/.aws, ~/.gitconfig, auth.json)
-#                                with /tmp/* allowed for scratch space
-SANDBOX_PERMISSIONS='{"*":"allow","doom_loop":"ask","external_directory":{"*":"deny","/tmp/*":"allow"}}'
-readonly SANDBOX_PERMISSIONS
+# The sandbox is the security boundary. `permission` and `lsp` are replaced
+# wholesale — a user-supplied `lsp.<name>.command` could spawn arbitrary
+# binaries, and a user-supplied `permission` could remove the
+# `external_directory: deny` mount defense. Any failure that would leave the
+# user's config in place (and therefore bypass these overrides) must fail the
+# container startup rather than warn-and-continue.
+if [[ ! -f "$SANDBOX_CONFIG" ]]; then
+	die "Sandbox config not found at $SANDBOX_CONFIG"
+fi
+
+if ! jq -e '.permission and .lsp' "$SANDBOX_CONFIG" >/dev/null; then
+	die "Sandbox config at $SANDBOX_CONFIG is missing required .permission or .lsp keys"
+fi
 
 if [[ -f "$OPENCODE_CONFIG" ]]; then
-	tmp=""
-	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") || {
-		warn "mktemp failed — continuing without permission overrides."
-	}
-	if [[ -n "$tmp" ]]; then
-		if jq --argjson perms "$SANDBOX_PERMISSIONS" '.permission = $perms' "$OPENCODE_CONFIG" >"$tmp"; then
-			if mv -f "$tmp" "$OPENCODE_CONFIG"; then
-				log "Permission overrides applied."
-			else
-				rm -f "$tmp"
-				warn "mv failed — continuing without permission overrides."
-			fi
-		else
-			rm -f "$tmp"
-			warn "jq failed to patch $OPENCODE_CONFIG — continuing without permission overrides."
-		fi
+	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") ||
+		die "mktemp failed — cannot apply sandbox overrides."
+
+	if ! jq --slurpfile sandbox "$SANDBOX_CONFIG" \
+		'.permission = $sandbox[0].permission | .lsp = $sandbox[0].lsp' \
+		"$OPENCODE_CONFIG" >"$tmp"; then
+		rm -f "$tmp"
+		die "jq failed to patch $OPENCODE_CONFIG — cannot apply sandbox overrides."
 	fi
+
+	if ! mv -f "$tmp" "$OPENCODE_CONFIG"; then
+		rm -f "$tmp"
+		die "mv failed — cannot apply sandbox overrides."
+	fi
+	log "Sandbox overrides applied."
 else
-	if [[ -f /etc/agent-sandbox/opencode-permissions.json ]]; then
-		cp /etc/agent-sandbox/opencode-permissions.json "$OPENCODE_CONFIG"
-		log "Created $OPENCODE_CONFIG from default permissions."
-	else
-		warn "Default permissions file not found — creating inline fallback."
-		printf '{"permission":%s}\n' "$SANDBOX_PERMISSIONS" >"$OPENCODE_CONFIG"
-		log "Created $OPENCODE_CONFIG with permission overrides."
-	fi
+	cp "$SANDBOX_CONFIG" "$OPENCODE_CONFIG" ||
+		die "cp failed — cannot create $OPENCODE_CONFIG from sandbox defaults."
+	log "Created $OPENCODE_CONFIG from sandbox defaults."
 fi
 
 # ─── Step 7: Initialize rtk for the active agent ──────────────────────────────

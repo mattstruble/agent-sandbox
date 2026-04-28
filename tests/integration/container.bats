@@ -96,6 +96,18 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
+@test "image: ty binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" ty
+    assert_success
+}
+
+# bats test_tags=integration
+@test "image: nixd binary exists and is executable" {
+    run "$RUNTIME" run --rm --entrypoint which "$IMAGE" nixd
+    assert_success
+}
+
+# bats test_tags=integration
 @test "image: node binary exists and is executable" {
     run "$RUNTIME" run --rm --entrypoint which "$IMAGE" node
     assert_success
@@ -298,19 +310,24 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "static files: /etc/agent-sandbox/opencode-permissions.json exists and is readable" {
-    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-permissions.json
+@test "static files: /etc/agent-sandbox/opencode-config.json exists and is readable" {
+    run "$RUNTIME" run --rm --entrypoint test "$IMAGE" -r /etc/agent-sandbox/opencode-config.json
     assert_success
 }
 
 # bats test_tags=integration
-@test "static files: /etc/agent-sandbox/opencode-permissions.json is valid JSON" {
+@test "static files: /etc/agent-sandbox/opencode-config.json is valid JSON" {
     run "$RUNTIME" run --rm --entrypoint bash "$IMAGE" \
-        -c 'jq . < /etc/agent-sandbox/opencode-permissions.json'
+        -c 'jq . < /etc/agent-sandbox/opencode-config.json'
     assert_success
     assert_output --partial '"permission"'
     assert_output --partial '"doom_loop"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"deny"'
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
+    assert_output --partial '"pyright"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -538,10 +555,11 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "entrypoint: opencode permission overrides are written to config file" {
+@test "entrypoint: opencode sandbox overrides are written to config file" {
     # The entrypoint (Phase 2) creates ~/.config/opencode/opencode.json with
-    # permission overrides. We run the full entrypoint and have the fake agent
-    # print the config file contents to verify the overrides were applied.
+    # permission and lsp overrides. We run the full entrypoint and have the
+    # fake agent print the config file contents to verify the overrides were
+    # applied.
     _TEST_WORKSPACE=$(make_tempdir)
     _TEST_AGENT=$(make_temp)
     printf '%s\n' \
@@ -576,6 +594,11 @@ _run_in_sandbox() {
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"deny"'
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
+    assert_output --partial '"pyright"'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -653,11 +676,12 @@ _run_in_sandbox() {
 }
 
 # bats test_tags=integration
-@test "config staging: opencode host config is staged and permission overrides replace user prefs" {
+@test "config staging: opencode host config is staged and sandbox overrides replace user prefs" {
     # Mount a fake opencode config at /host-config/opencode.
-    # The entrypoint copies it to ~/.config/opencode, then replaces the entire
-    # permission block with sandbox overrides. The fake agent reads the resulting
-    # config to verify both staging and full permission replacement worked.
+    # The entrypoint copies it to ~/.config/opencode, then replaces the
+    # `permission` and `lsp` blocks with sandbox overrides. The fake agent
+    # reads the resulting config to verify staging, permission replacement,
+    # and lsp injection all worked.
     _TEST_HOST_CONFIG_DIR=$(make_tempdir)
     printf '{"model": "test-model", "permission": {"bash": "deny"}}\n' > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
 
@@ -693,11 +717,64 @@ _run_in_sandbox() {
         -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
         "$IMAGE"
     assert_success
-    # Non-permission config is preserved
+    # Non-overridden config is preserved
     assert_output --partial '"model": "test-model"'
     # Permission block is fully replaced
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
     # User's deny should NOT appear — sandbox overrides everything
     refute_output --partial '"bash": "deny"'
+    # LSP block is injected from sandbox defaults
+    assert_output --partial '"lsp"'
+    assert_output --partial '"ty"'
+}
+
+# bats test_tags=integration
+@test "config staging: user-supplied lsp entries are replaced wholesale by sandbox defaults" {
+    # A user-supplied lsp.<name>.command could point at an arbitrary binary —
+    # the sandbox must discard the entire user-provided lsp block and replace
+    # it with the baked config. This test pins that contract.
+    _TEST_HOST_CONFIG_DIR=$(make_tempdir)
+    printf '%s' \
+        '{"lsp": {"custom-ls": {"command": ["/bin/evil"], "extensions": [".evil"]}}}' \
+        > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
+
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \
+        'exit 0' > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
+        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
+        "$IMAGE"
+    assert_success
+    # Sandbox defaults are in place
+    assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
+    # User's custom lsp entry is gone
+    refute_output --partial '"custom-ls"'
+    refute_output --partial '/bin/evil'
 }

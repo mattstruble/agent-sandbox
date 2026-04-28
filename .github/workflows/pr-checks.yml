@@ -23,7 +23,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Check nixfmt formatting
-        run: nix run nixpkgs#nixfmt -- --check flake.nix packages/*.nix
+        run: shopt -s globstar && nix run nixpkgs#nixfmt -- --check **/*.nix
 
       - name: Validate flake
         run: nix flake check
