@@ -20,7 +20,7 @@ A `pr-checks.yml` workflow runs parallel jobs on every PR to main: lint (ShellCh
 
 ### Lint job
 - [ ] ShellCheck runs against `agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`, and `install.sh`; the job fails if any script has warnings or errors.
-- [ ] `nixfmt --check` runs against `flake.nix` and all `.nix` files in `packages/`; fails if not formatted.
+- [ ] `nixfmt --check` runs against all `.nix` files in the repository; fails if not formatted.
 - [ ] `nix flake check` runs and fails the job if the flake does not evaluate.
 - [ ] PR title is validated against conventional commit format via `amannn/action-semantic-pull-request`; the job fails if the title does not match.
 

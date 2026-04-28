@@ -435,7 +435,7 @@ Triggered on every pull request to main. Three parallel jobs:
 
 **Lint job:**
 - Install Nix via `DeterminateSystems/nix-installer-action`
-- `nixfmt --check flake.nix` and all `.nix` files in `packages/` — fail if not formatted
+- `nixfmt --check` on all `.nix` files in the repository — fail if not formatted
 - `nix flake check` — validate flake evaluates
 - ShellCheck on `agent-sandbox.sh`, `entrypoint.sh`, `init-firewall.sh`
 - Conventional commit validation on the PR title via `amannn/action-semantic-pull-request`
