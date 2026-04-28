@@ -101,36 +101,39 @@ log "Applying sandbox opencode overrides to $OPENCODE_CONFIG..."
 
 mkdir -p ~/.config/opencode
 
-# The sandbox is the security boundary, so `permission` is replaced wholesale
-# (not merged) with user prefs. `lsp` is also replaced — OpenCode v1.4.11
-# treats a missing `lsp` key as "all LSPs disabled", and the sandbox defaults
-# pick specific LSPs (ty, nixd) and disable others (pyright, eslint).
+# The sandbox is the security boundary. `permission` and `lsp` are replaced
+# wholesale — a user-supplied `lsp.<name>.command` could spawn arbitrary
+# binaries, and a user-supplied `permission` could remove the
+# `external_directory: deny` mount defense. Any failure that would leave the
+# user's config in place (and therefore bypass these overrides) must fail the
+# container startup rather than warn-and-continue.
 if [[ ! -f "$SANDBOX_CONFIG" ]]; then
 	die "Sandbox config not found at $SANDBOX_CONFIG"
 fi
 
+if ! jq -e '.permission and .lsp' "$SANDBOX_CONFIG" >/dev/null; then
+	die "Sandbox config at $SANDBOX_CONFIG is missing required .permission or .lsp keys"
+fi
+
 if [[ -f "$OPENCODE_CONFIG" ]]; then
-	tmp=""
-	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") || {
-		warn "mktemp failed — continuing without sandbox overrides."
-	}
-	if [[ -n "$tmp" ]]; then
-		if jq --slurpfile sandbox "$SANDBOX_CONFIG" \
-			'.permission = $sandbox[0].permission | .lsp = $sandbox[0].lsp' \
-			"$OPENCODE_CONFIG" >"$tmp"; then
-			if mv -f "$tmp" "$OPENCODE_CONFIG"; then
-				log "Sandbox overrides applied."
-			else
-				rm -f "$tmp"
-				warn "mv failed — continuing without sandbox overrides."
-			fi
-		else
-			rm -f "$tmp"
-			warn "jq failed to patch $OPENCODE_CONFIG — continuing without sandbox overrides."
-		fi
+	tmp=$(mktemp "$(dirname "$OPENCODE_CONFIG")/config.json.XXXXXX") ||
+		die "mktemp failed — cannot apply sandbox overrides."
+
+	if ! jq --slurpfile sandbox "$SANDBOX_CONFIG" \
+		'.permission = $sandbox[0].permission | .lsp = $sandbox[0].lsp' \
+		"$OPENCODE_CONFIG" >"$tmp"; then
+		rm -f "$tmp"
+		die "jq failed to patch $OPENCODE_CONFIG — cannot apply sandbox overrides."
 	fi
+
+	if ! mv -f "$tmp" "$OPENCODE_CONFIG"; then
+		rm -f "$tmp"
+		die "mv failed — cannot apply sandbox overrides."
+	fi
+	log "Sandbox overrides applied."
 else
-	cp "$SANDBOX_CONFIG" "$OPENCODE_CONFIG"
+	cp "$SANDBOX_CONFIG" "$OPENCODE_CONFIG" ||
+		die "cp failed — cannot create $OPENCODE_CONFIG from sandbox defaults."
 	log "Created $OPENCODE_CONFIG from sandbox defaults."
 fi
 

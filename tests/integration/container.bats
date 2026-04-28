@@ -323,8 +323,10 @@ _run_in_sandbox() {
     assert_output --partial '"permission"'
     assert_output --partial '"doom_loop"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"deny"'
     assert_output --partial '"lsp"'
     assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
     assert_output --partial '"pyright"'
 }
 
@@ -592,8 +594,10 @@ _run_in_sandbox() {
     assert_output --partial '"*": "allow"'
     assert_output --partial '"doom_loop": "ask"'
     assert_output --partial '"external_directory"'
+    assert_output --partial '"deny"'
     assert_output --partial '"lsp"'
     assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
     assert_output --partial '"pyright"'
 }
 
@@ -723,4 +727,54 @@ _run_in_sandbox() {
     # LSP block is injected from sandbox defaults
     assert_output --partial '"lsp"'
     assert_output --partial '"ty"'
+}
+
+# bats test_tags=integration
+@test "config staging: user-supplied lsp entries are replaced wholesale by sandbox defaults" {
+    # A user-supplied lsp.<name>.command could point at an arbitrary binary —
+    # the sandbox must discard the entire user-provided lsp block and replace
+    # it with the baked config. This test pins that contract.
+    _TEST_HOST_CONFIG_DIR=$(make_tempdir)
+    printf '%s' \
+        '{"lsp": {"custom-ls": {"command": ["/bin/evil"], "extensions": [".evil"]}}}' \
+        > "${_TEST_HOST_CONFIG_DIR}/opencode.json"
+
+    _TEST_WORKSPACE=$(make_tempdir)
+    _TEST_AGENT=$(make_temp)
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'cat "${HOME}/.config/opencode/opencode.json" 2>/dev/null || echo "CONFIG_NOT_FOUND"' \
+        'exit 0' > "$_TEST_AGENT"
+    chmod +x "$_TEST_AGENT"
+
+    # Determine opencode binary path inside the image
+    local opencode_path
+    opencode_path=$("$RUNTIME" run --rm --entrypoint which "$IMAGE" opencode 2>/dev/null || true)
+    if [[ -z "$opencode_path" || "$opencode_path" != /* ]]; then
+        skip "opencode binary path could not be determined"
+    fi
+
+    run "$RUNTIME" run --rm \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
+        --cap-add=SETUID \
+        --cap-add=SETGID \
+        --cap-add=SYS_TIME \
+        --sysctl=net.ipv6.conf.all.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.default.disable_ipv6=1 \
+        --sysctl=net.ipv6.conf.lo.disable_ipv6=1 \
+        --security-opt=no-new-privileges \
+        -e AGENT=opencode \
+        -v "${_TEST_AGENT}:${opencode_path}:ro" \
+        -v "${_TEST_HOST_CONFIG_DIR}:/host-config/opencode:ro" \
+        -v "${_TEST_WORKSPACE}:${_TEST_WORKSPACE}" \
+        -e SANDBOX_WORKSPACE="${_TEST_WORKSPACE}" \
+        "$IMAGE"
+    assert_success
+    # Sandbox defaults are in place
+    assert_output --partial '"ty"'
+    assert_output --partial '"nixd"'
+    # User's custom lsp entry is gone
+    refute_output --partial '"custom-ls"'
+    refute_output --partial '/bin/evil'
 }

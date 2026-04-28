@@ -114,6 +114,9 @@ Examples:
 | su-exec | nixpkgs |
 | `gh` CLI | nixpkgs |
 | `uv` | nixpkgs |
+| `ty` | nixpkgs — Python LSP (astral-sh, preview); invoked via absolute store path |
+| `nixd` | nixpkgs — Nix LSP; invoked via absolute store path |
+| `stdenv.cc.cc.lib` | nixpkgs — provides `libstdc++.so.6` for OpenCode's native file-watcher |
 | `nix` | nixpkgs (bundled via `dockerTools.buildLayeredImage`) |
 | `opencode` | Custom derivation (`packages/opencode.nix`) — `fetchurl` from GitHub releases, per-architecture |
 | `rtk` | Custom derivation (`packages/rtk.nix`) — `fetchurl` from GitHub releases, per-architecture |
@@ -122,7 +125,7 @@ Examples:
 
 **Privilege model:** The container starts as root to establish the iptables firewall, then drops to the `sandbox` user via `su-exec` for all subsequent operations. No sudo access is granted — sudo is not installed in the container.
 
-**Static files baked into image:** The Nix instructions text (appended to agent prompt files at runtime) and the default OpenCode permissions JSON are stored as Nix-produced files at `/etc/agent-sandbox/` in the image. The entrypoint reads these files rather than generating them inline.
+**Static files baked into image:** The Nix instructions text (appended to agent prompt files at runtime) and the default OpenCode sandbox config JSON (`opencode-config.json`, containing `permission` and `lsp` blocks) are stored as Nix-produced files at `/etc/agent-sandbox/` in the image. The entrypoint reads these files rather than generating them inline.
 
 **Image tagging:** `agent-sandbox:<version>` for releases, `agent-sandbox:<commit-sha>` for CI builds. The launcher knows its own version and pulls the matching tag from GHCR.
 
@@ -219,7 +222,7 @@ Runs inside the container in this order:
 3. Drop to the `sandbox` user via `su-exec`; steps 4–8 run as `sandbox`
 4. Copy `/host-config/opencode/` → `~/.config/opencode/` (writable); skip if not mounted
 5. Append Nix usage instructions (read from `/etc/agent-sandbox/nix-instructions.md`) to `~/.config/opencode/AGENTS.md`; create file if absent
-6. Apply sandbox config overrides: use `jq` to replace the `.permission` and `.lsp` objects with sandbox defaults from `/etc/agent-sandbox/opencode-config.json`; if file absent, copy that file wholesale
+6. Apply sandbox config overrides: use `jq` to replace the `.permission` and `.lsp` objects in `~/.config/opencode/opencode.json` with sandbox defaults from `/etc/agent-sandbox/opencode-config.json`. If `opencode.json` does not yet exist, copy `opencode-config.json` in as the initial user config. If `opencode-config.json` is missing from the image, abort container startup — the sandbox cannot enforce its security boundary without it.
 7. Run `rtk init -g --opencode`
 8. `exec opencode` with `$SANDBOX_WORKSPACE` as working directory
 
@@ -313,7 +316,7 @@ Built with `dockerTools.buildLayeredImage` following the pattern from NixOS/nix 
 2. Assembles all packages (nixpkgs + custom derivations) into a layered image
 3. Generates `/etc/nix/nix.conf` with immutable security settings
 4. Pins the flake registry to the same nixpkgs revision as `flake.lock`
-5. Includes static files at `/etc/agent-sandbox/` (Nix instructions, default permissions JSON)
+5. Includes static files at `/etc/agent-sandbox/` (Nix instructions, default sandbox config JSON `opencode-config.json`)
 6. Includes `entrypoint.sh` and `init-firewall.sh`
 7. Configures the OCI image: entrypoint, env vars, labels, user
 
@@ -536,7 +539,7 @@ Configured on the repository (not via workflow):
 | Custom derivations | `packages/opencode.nix`, `packages/rtk.nix` | Isolates version+hash per tool; clean Renovate regex targets; keeps `flake.nix` readable |
 | Vulnerability scanning | `vulnix` on Nix store closure + Trivy filesystem scan | `vulnix` understands Nix derivations (Trivy cannot enumerate packages in Nix images); Trivy fs scan catches non-package concerns |
 | nixpkgs runtime pin | Flake registry derived from `flake.lock` | Single source of truth for nixpkgs version; updating `flake.lock` updates both build-time and runtime pins |
-| Static entrypoint files | Nix instructions and default permissions JSON at `/etc/agent-sandbox/` | Entrypoint reads files instead of inline heredocs; build-time generation via Nix |
+| Static entrypoint files | Nix instructions and default sandbox config JSON (`opencode-config.json`) at `/etc/agent-sandbox/` | Entrypoint reads files instead of inline heredocs; build-time generation via Nix |
 | Capability dropping | `--cap-drop=ALL` before cap-adds | Removes all default caps; container gets only NET_ADMIN + NET_RAW + SETUID + SETGID + SYS_TIME |
 | NTP pinning | UDP 123 restricted to Cloudflare IPs (162.159.200.1, 162.159.200.123) | Mitigates NTP amplification and exfiltration; no DNS dependency at chrony startup |
 | Privilege escalation | `--security-opt=no-new-privileges` | Prevents execve-based privilege gains; compatible with su-exec (syscall-based) |

@@ -112,12 +112,14 @@
             apt-get (which requires root you do not have).
           '';
 
-          # Baseline OpenCode config baked into the image. The entrypoint merges
-          # `permission` into the user's opencode.json at startup; `lsp` is
-          # required because OpenCode v1.4.11 treats a missing `lsp` key as
-          # "all LSPs disabled". `ty` and `nixd` are baked because OpenCode
-          # cannot auto-install them; pyright and eslint are disabled to avoid
-          # double-diagnostics with ty and oxlint.
+          # Baseline OpenCode config baked into the image. The entrypoint
+          # replaces the `permission` and `lsp` blocks in the user's
+          # opencode.json at startup. `lsp` is required because OpenCode v1.4.11
+          # treats a missing `lsp` key as "all LSPs disabled". `ty` and `nixd`
+          # are baked because OpenCode cannot auto-install them; pyright and
+          # eslint are disabled to avoid double-diagnostics with ty and oxlint.
+          # LSP commands use absolute store paths so a compromised agent cannot
+          # shadow them via `nix profile install` earlier on PATH.
           opencodeConfigFile = pkgsLinux.writeText "opencode-config.json" (
             builtins.toJSON {
               permission = {
@@ -131,12 +133,20 @@
               lsp = {
                 ty = {
                   command = [
-                    "ty"
+                    "${pkgsLinux.ty}/bin/ty"
                     "server"
                   ];
                   extensions = [
                     ".py"
                     ".pyi"
+                  ];
+                };
+                nixd = {
+                  command = [
+                    "${pkgsLinux.nixd}/bin/nixd"
+                  ];
+                  extensions = [
+                    ".nix"
                   ];
                 };
                 pyright = {
