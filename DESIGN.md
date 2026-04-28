@@ -176,7 +176,6 @@ Host agent config directories are **staged** at read-only mount points rather th
 | Host source | Container mount point | Mode |
 |---|---|---|
 | `<workspace>` | `<workspace>` (full host path) | `rw,z` |
-| `~/.local/share/opencode` | `/home/sandbox/.local/share/opencode` | `rw,z` |
 | `~/.gitconfig` | `/home/sandbox/.gitconfig` | `ro,z` |
 | `~/.config/opencode/` | `/host-config/opencode/` | `ro,z` (if exists on host) |
 | `$SSH_AUTH_SOCK` | `/tmp/ssh_auth_sock` | `ro,z` (unless `--no-ssh`) |
